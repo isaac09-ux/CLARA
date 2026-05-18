@@ -1,0 +1,9 @@
+ultralytics>=8.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Optional: VballNet ball detector (motion-based, no training needed)
+onnxruntime>=1.16.0
+
+# Optional: pose estimation
+rtmlib>=0.0.13
