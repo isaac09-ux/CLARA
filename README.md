@@ -30,6 +30,15 @@ CLARA processes match video into structured scouting data: player tracks, ball t
 - **Quality scoring** 0-100 self-evaluation
 - **Biomechanical analytics**: torso lean, stance width, knee flexion
 
+## Models (not bundled)
+
+CLARA no incluye los pesos de los modelos en el repo. Hay que obtenerlos por separado:
+
+- **VballNet (`.onnx`)** — descargar manualmente desde [asigatchov/fast-volleyball-tracking-inference](https://github.com/asigatchov/fast-volleyball-tracking-inference) (carpeta `models/`). Pasarlo a CLARA con `--vballnet-model`.
+- **RTMPose (rtmlib)** — se descarga automáticamente la primera vez que se usa `--pose rtmlib` (~50 MB a `~/.cache/rtmlib/`). No requiere acción manual.
+- **YOLOv8 base** — `ultralytics` descarga `yolov8n.pt` automáticamente la primera vez.
+- **YOLOv8 custom (opcional)** — entrenar con `clara_train_colab.ipynb` y pasar el `.pt` resultante con `--ball-model`.
+
 ## Quick start
 
 ```bash
