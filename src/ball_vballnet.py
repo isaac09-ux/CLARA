@@ -137,8 +137,15 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
         if len(buffer) > SEQ_LEN:
             buffer.pop(0)
 
-        # Solo correr inferencia cuando tengamos suficientes frames
-        if len(buffer) == SEQ_LEN and frame_idx % stride == 0:
+        # Solo correr inferencia cuando tengamos suficientes frames.
+        # Stride se aplica al frame CENTRAL (el que se reporta) para que las
+        # detecciones de balón caigan en los mismos índices que el stream de
+        # personas (ultralytics vid_stride=N emite frames en 0, N, 2N, ...).
+        center = SEQ_LEN // 2
+        center_frame_idx = frame_idx - center
+        if (len(buffer) == SEQ_LEN
+                and center_frame_idx >= 0
+                and center_frame_idx % stride == 0):
             # Stack en formato (1, SEQ_LEN, H, W) - channels-first
             input_tensor = np.stack(buffer, axis=0)[np.newaxis, ...]
             output = session.run(None, {input_name: input_tensor})[0]
@@ -146,9 +153,7 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
             # output shape: (1, SEQ_LEN, H, W) — un heatmap por cada frame de la
             # secuencia. El frame central tiene contexto pasado y futuro
             # balanceado; los extremos sólo ven medio contexto y dan peor recall.
-            center = SEQ_LEN // 2
             heatmap = output[0, center]
-            center_frame_idx = frame_idx - center
 
             det = _postprocess_heatmap(heatmap, threshold, orig_w, orig_h)
             if det is not None:
