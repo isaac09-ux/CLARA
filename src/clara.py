@@ -241,8 +241,6 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         vid_stride=stride,
     )
 
-    cap_for_pose = cv2.VideoCapture(video_path) if pose_estimator else None
-
     for r in results:
         actual_frame = samples_processed * stride
 
@@ -298,33 +296,31 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                     })
 
             if pose_estimator and valid_persons:
-                if cap_for_pose is not None:
-                    cap_for_pose.set(cv2.CAP_PROP_POS_FRAMES, actual_frame)
-                    ok, frame_img = cap_for_pose.read()
-                    if ok:
-                        bboxes = [vp[2] for vp in valid_persons]
-                        try:
-                            pose_results = pose_estimator.estimate_batch(
-                                frame_img, bboxes)
-                            for (tid, sample, _), pose_data in zip(
-                                    valid_persons, pose_results):
-                                if pose_data["avg_score"] >= 0.3:
-                                    sample["pose"] = {
-                                        "kp": pose_data["keypoints"],
-                                        "sc": pose_data["scores"],
-                                        "avg": pose_data["avg_score"],
-                                    }
-                        except Exception as e:
-                            if samples_processed % 50 == 0:
-                                print(f"⚠ Pose error frame {actual_frame}: {e}")
+                # ultralytics ya tiene el frame decodificado; usarlo directo
+                # es O(1) vs. seek aleatorio con cap.set(POS_FRAMES) que
+                # invalida el cache del decodificador en cada muestra.
+                frame_img = getattr(r, "orig_img", None)
+                if frame_img is not None:
+                    bboxes = [vp[2] for vp in valid_persons]
+                    try:
+                        pose_results = pose_estimator.estimate_batch(
+                            frame_img, bboxes)
+                        for (tid, sample, _), pose_data in zip(
+                                valid_persons, pose_results):
+                            if pose_data["avg_score"] >= 0.3:
+                                sample["pose"] = {
+                                    "kp": pose_data["keypoints"],
+                                    "sc": pose_data["scores"],
+                                    "avg": pose_data["avg_score"],
+                                }
+                    except Exception as e:
+                        if samples_processed % 50 == 0:
+                            print(f"⚠ Pose error frame {actual_frame}: {e}")
 
         samples_processed += 1
         if samples_processed % 200 == 0:
             pct = actual_frame / total_frames * 100
             print(f"  ⏳ {samples_processed} muestras ({pct:.0f}%)")
-
-    if cap_for_pose is not None:
-        cap_for_pose.release()
 
     # ─── Detección de balón ───
     if ball_detector == "yolo" and ball_model_path and Path(ball_model_path).exists():
