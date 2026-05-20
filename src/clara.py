@@ -102,14 +102,34 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
 #  DETECCIÓN DE BALÓN VIA VBALLNET
 # ============================================================
 def detect_balls_vballnet(video_path, model_path, H, ppm,
-                          court_w, court_h, threshold=0.5,
-                          stride=1, verbose=True):
-    """VballNet adapter. Returns CLARA-compatible ball detection list."""
+                          court_w, court_h,
+                          frame_h, frame_w, court_horizon_y=None,
+                          max_h_ratio=0.55, max_w_ratio=0.40,
+                          rejected_counts=None,
+                          threshold=0.5, stride=1, verbose=True):
+    """VballNet adapter. Returns CLARA-compatible ball detection list.
+
+    Applies the same foreground filter (court_horizon_y, bottom-edge guard)
+    used for YOLO ball detections so detecciones de tribuna/banca se descartan.
+    """
     from ball_vballnet import detect_balls
     raw = detect_balls(video_path, model_path,
                        threshold=threshold, stride=stride, verbose=verbose)
     out = []
     for d in raw:
+        # bbox sintético desde (x, y, radius) para reusar classify_detection.
+        # Sólo importa el borde inferior (y2) para el filtro de balón —
+        # is_ball=True salta los checks de altura/ancho relativos al frame.
+        r = max(d.get("radius", 5.0), 5.0)
+        bbox = [d["x"] - r, d["y"] - r, d["x"] + r, d["y"] + r]
+        status, _ = classify_detection(
+            bbox, frame_h, frame_w, court_horizon_y,
+            max_h_ratio, max_w_ratio, is_ball=True,
+        )
+        if status != "ok":
+            if rejected_counts is not None:
+                rejected_counts[f"ball_{status}"] += 1
+            continue
         cx_m, cy_m = project(H, d["x"], d["y"])
         out.append({
             "frame": d["frame"],
@@ -316,6 +336,11 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         ball_detections.extend(
             detect_balls_vballnet(video_path, vballnet_model, H, ppm,
                                    court_w, court_h,
+                                   frame_h=Hf, frame_w=W,
+                                   court_horizon_y=court_horizon_y,
+                                   max_h_ratio=max_h_ratio,
+                                   max_w_ratio=max_w_ratio,
+                                   rejected_counts=rejected_counts,
                                    stride=stride, verbose=True)
         )
 
