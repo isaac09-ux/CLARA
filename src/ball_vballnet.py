@@ -143,14 +143,16 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
             input_tensor = np.stack(buffer, axis=0)[np.newaxis, ...]
             output = session.run(None, {input_name: input_tensor})[0]
 
-            # output shape: (1, SEQ_LEN, H, W) — heatmap por cada frame de la secuencia
-            # Tomamos el heatmap del frame CENTRAL (el más reciente con contexto pasado+futuro)
-            # Aquí usamos el último (frame_idx actual) por simplicidad
-            heatmap = output[0, -1]  # último frame de la secuencia
+            # output shape: (1, SEQ_LEN, H, W) — un heatmap por cada frame de la
+            # secuencia. El frame central tiene contexto pasado y futuro
+            # balanceado; los extremos sólo ven medio contexto y dan peor recall.
+            center = SEQ_LEN // 2
+            heatmap = output[0, center]
+            center_frame_idx = frame_idx - center
 
             det = _postprocess_heatmap(heatmap, threshold, orig_w, orig_h)
             if det is not None:
-                det["frame"] = frame_idx
+                det["frame"] = center_frame_idx
                 detections.append(det)
 
         frame_idx += 1
