@@ -440,9 +440,17 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                     sw = stance_width(p["kp"], p["sc"])
                     if sw is not None:
                         stance_vals.append(sw)
-                    kf = knee_flexion(p["kp"], p["sc"], side="left")
-                    if kf is not None:
-                        knee_vals.append(kf)
+                    # Promediar las dos rodillas — con la jugadora de perfil
+                    # una pierna suele estar ocluida; si sólo medimos la
+                    # izquierda perdemos la mitad de las muestras útiles.
+                    kf_sides = [
+                        v for v in (
+                            knee_flexion(p["kp"], p["sc"], side="left"),
+                            knee_flexion(p["kp"], p["sc"], side="right"),
+                        ) if v is not None
+                    ]
+                    if kf_sides:
+                        knee_vals.append(float(np.mean(kf_sides)))
                 if lean_vals or stance_vals or knee_vals:
                     pose_stats[tid] = {
                         "samples_with_pose": len(lean_vals),
