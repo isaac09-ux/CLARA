@@ -352,10 +352,15 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                   if is_in_court(b["court_x"], b["court_y"],
                                  court_w, court_h, margin=2)]
 
+    # Frames únicos con al menos una detección de balón — métrica acotada a
+    # [0, samples_processed]. Distinta de len(ball_clean) cuando un detector
+    # emite varias cajas en el mismo frame.
+    ball_frames_oncourt = len({b["frame"] for b in ball_clean})
+
     # ─── Score de calidad ───
     expected_tracks = 6 if half_court else 12
     score, score_breakdown = compute_quality_score(
-        filtered, zone_visits, ball_clean, rejected_counts,
+        filtered, zone_visits, ball_frames_oncourt, rejected_counts,
         samples_processed, expected_tracks, half_court
     )
 
@@ -409,7 +414,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "filtered_tracks": len(filtered),
         "rejected_detections": dict(rejected_counts),
         "ball_detections_oncourt": len(ball_clean),
-        "ball_detection_rate": round(len(ball_clean) / max(samples_processed, 1), 3),
+        "ball_frames_oncourt": ball_frames_oncourt,
+        "ball_detection_rate": round(ball_frames_oncourt / max(samples_processed, 1), 3),
         "quality_score": score,
         "quality_breakdown": score_breakdown,
         "zone_visits_total": dict(zone_visits),
@@ -495,8 +501,10 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     return metrics
 
 
-def compute_quality_score(tracks, zones, balls, rejected,
+def compute_quality_score(tracks, zones, ball_frames, rejected,
                           total_samples, expected_tracks, half_court):
+    """ball_frames: número de frames únicos con al menos una detección de balón
+    (no el total de cajas) — acotado a [0, total_samples]."""
     breakdown = {}
     track_pts = min(30, int(len(tracks) / expected_tracks * 30))
     breakdown["tracks"] = f"{track_pts}/30 ({len(tracks)} de {expected_tracks})"
@@ -506,7 +514,7 @@ def compute_quality_score(tracks, zones, balls, rejected,
     zone_pts = min(25, int(zones_with_data / expected_zones * 25))
     breakdown["zonas"] = f"{zone_pts}/25 ({zones_with_data} de {expected_zones})"
 
-    ball_rate = len(balls) / max(total_samples, 1)
+    ball_rate = ball_frames / max(total_samples, 1)
     if ball_rate >= 0.50:
         ball_pts = 20
     elif ball_rate >= 0.10:
