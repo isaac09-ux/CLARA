@@ -80,6 +80,39 @@ def is_in_court(cx, cy, cw, ch, margin=0.5):
             -margin <= cx <= cw + margin and -margin <= cy <= ch + margin)
 
 
+def filter_ball_tracks(detections, stride, max_gap=None,
+                       max_dist_m=6.0, min_track_len=2):
+    """Agrupa detecciones de balón en tracks por cercanía temporal y espacial,
+    descarta tracks cortos (FPs aislados: luces, banderines, balones del público).
+
+    Una detección sólo sobrevive si tiene al menos otra detección dentro de
+    max_gap frames Y max_dist_m metros en coords de cancha. Sin entrenar nada,
+    elimina los falsos positivos puntuales que un buen detector frame-por-frame
+    no puede distinguir de un balón real.
+    """
+    if len(detections) < min_track_len:
+        return []
+    if max_gap is None:
+        # Un par de strides cubre saltos breves sin pegar tracks no relacionados.
+        max_gap = max(stride * 3, 6)
+
+    dets = sorted(detections, key=lambda d: d["frame"])
+    tracks = []
+    current = [dets[0]]
+    for d in dets[1:]:
+        prev = current[-1]
+        gap = d["frame"] - prev["frame"]
+        dx = d["court_x"] - prev["court_x"]
+        dy = d["court_y"] - prev["court_y"]
+        if gap <= max_gap and (dx * dx + dy * dy) ** 0.5 <= max_dist_m:
+            current.append(d)
+        else:
+            tracks.append(current)
+            current = [d]
+    tracks.append(current)
+    return [d for t in tracks if len(t) >= min_track_len for d in t]
+
+
 def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
                        max_height_ratio=0.55, max_width_ratio=0.40,
                        is_ball=False):
@@ -376,6 +409,11 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     ball_clean = [b for b in ball_detections
                   if is_in_court(b["court_x"], b["court_y"],
                                  court_w, court_h, margin=2)]
+    ball_before_tracking = len(ball_clean)
+    ball_clean = filter_ball_tracks(ball_clean, stride=stride)
+    ball_isolated_dropped = ball_before_tracking - len(ball_clean)
+    if ball_isolated_dropped > 0:
+        rejected_counts["ball_isolated"] = ball_isolated_dropped
 
     # Frames únicos con al menos una detección de balón — métrica acotada a
     # [0, samples_processed]. Distinta de len(ball_clean) cuando un detector
