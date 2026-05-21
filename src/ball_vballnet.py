@@ -124,6 +124,7 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
     # Buffer circular de SEQ_LEN frames preprocesados
     buffer = []
     frame_idx = 0
+    evaluated = 0  # nº de frames donde corrimos inferencia (denominador correcto del rate)
 
     while True:
         ok, frame = cap.read()
@@ -149,6 +150,7 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
             # Stack en formato (1, SEQ_LEN, H, W) - channels-first
             input_tensor = np.stack(buffer, axis=0)[np.newaxis, ...]
             output = session.run(None, {input_name: input_tensor})[0]
+            evaluated += 1
 
             # output shape: (1, SEQ_LEN, H, W) — un heatmap por cada frame de la
             # secuencia. El frame central tiene contexto pasado y futuro
@@ -168,9 +170,9 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
     cap.release()
 
     if verbose:
-        rate = len(detections) / max(frame_idx, 1) * 100
-        print(f"[VballNet] ✓ {len(detections)} balones en {frame_idx} frames "
-              f"({rate:.1f}%)")
+        rate = len(detections) / max(evaluated, 1) * 100
+        print(f"[VballNet] ✓ {len(detections)} balones / {evaluated} frames "
+              f"evaluados ({rate:.1f}%) — stride={stride}, video={frame_idx} frames")
 
     return detections
 
