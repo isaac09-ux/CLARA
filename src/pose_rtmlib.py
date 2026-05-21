@@ -22,13 +22,6 @@ knees (13,14), ankles (15,16) for biomechanical analysis:
 import cv2
 import numpy as np
 
-try:
-    from rtmlib import RTMPose
-except ImportError as e:
-    raise ImportError(
-        "rtmlib no instalado. Instala con: pip install rtmlib"
-    ) from e
-
 
 # COCO 17 keypoint names (índice → nombre)
 COCO_KEYPOINTS = [
@@ -56,6 +49,12 @@ class PoseEstimator:
               'lightweight' (más rápido, menos preciso)
         device: 'cpu', 'cuda', 'mps'
         """
+        try:
+            from rtmlib import RTMPose
+        except ImportError as e:
+            raise ImportError(
+                "rtmlib no instalado. Instala con: pip install rtmlib"
+            ) from e
         print(f"[RTMPose] Cargando modelo (mode={mode}, device={device})...")
         self.pose_model = RTMPose(
             onnx_model="https://download.openmmlab.com/mmpose/v1/projects/"

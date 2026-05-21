@@ -123,6 +123,24 @@ clara/
 └── clara_train_colab.ipynb   — Colab notebook for YOLO training
 ```
 
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest                                  # full unit suite (~0.3s)
+pytest --cov=src --cov-report=term      # with coverage
+```
+
+Tests live under `tests/` and cover the pure-function core: geometry
+(`zone_for_court_pos`, `is_in_court`, homography projection), foreground
+filtering (`classify_detection`), ball-track clustering
+(`filter_ball_tracks`), quality scoring (`compute_quality_score`),
+biomechanics (`torso_lean_angle`, `stance_width`, `knee_flexion`),
+VballNet pre/post-processing, and the HTML report generator.
+
+YOLO/RTMPose/ONNX-runtime imports are deferred to call sites, so unit
+tests run without pulling in heavy model dependencies.
+
 ## Versioning
 
 - **v0.1**: HTML prototype with TensorFlow.js

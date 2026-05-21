@@ -20,13 +20,6 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-try:
-    import onnxruntime as ort
-except ImportError as e:
-    raise ImportError(
-        "onnxruntime no instalado. Instala con: pip install onnxruntime"
-    ) from e
-
 
 # Constantes del modelo VballNet preentrenado
 SEQ_LEN = 9          # frames consecutivos en input
@@ -102,6 +95,12 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
         )
 
     # Cargar modelo
+    try:
+        import onnxruntime as ort
+    except ImportError as e:
+        raise ImportError(
+            "onnxruntime no instalado. Instala con: pip install onnxruntime"
+        ) from e
     providers = ["CPUExecutionProvider"]
     if "CUDAExecutionProvider" in ort.get_available_providers():
         providers.insert(0, "CUDAExecutionProvider")

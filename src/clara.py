@@ -23,7 +23,6 @@ import json
 import argparse
 from pathlib import Path
 from collections import defaultdict
-from ultralytics import YOLO
 
 
 # ============================================================
@@ -212,6 +211,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     print(f"│ Stride: {stride}")
     print(f"└──────────────────────────────────────────\n")
 
+    from ultralytics import YOLO
     person_model = YOLO("yolov8n.pt")
 
     pose_estimator = None
@@ -325,6 +325,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     # ─── Detección de balón ───
     if ball_detector == "yolo" and ball_model_path and Path(ball_model_path).exists():
         print(f"\n[•] Detectando balón con modelo custom YOLOv8...")
+        from ultralytics import YOLO
         ball_model = YOLO(ball_model_path)
         cap = cv2.VideoCapture(video_path)
         for sample_idx in range(samples_processed):
