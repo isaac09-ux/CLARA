@@ -77,7 +77,7 @@ def _postprocess_heatmap(heatmap, threshold=HEATMAP_THRESHOLD,
 
 
 def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
-                 verbose=True):
+                 stride=1, verbose=True):
     """
     Corre VballNet en un video y devuelve detecciones de balón frame por frame.
 
@@ -85,6 +85,9 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
         video_path: ruta al video .mp4
         model_path: ruta al modelo VballNet .onnx
         threshold: umbral del heatmap (0-1). Default 0.5.
+        stride: 1 evalúa todos los frames; >1 alimenta el buffer de 9 frames
+            sólo cada N frames del video. Reduce inferencias y RAM ~stride×
+            a costa de recall (el balón salta más entre frames del buffer).
         verbose: imprimir progreso.
 
     Returns:
@@ -114,34 +117,43 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if verbose:
-        print(f"[VballNet] Video: {orig_w}x{orig_h}, {total} frames")
+        print(f"[VballNet] Video: {orig_w}x{orig_h}, {total} frames "
+              f"(stride={stride})")
         print(f"[VballNet] Modelo: {model_path.name}")
 
     detections = []
-    # Buffer circular de SEQ_LEN frames preprocesados
+    # Buffer circular de SEQ_LEN frames preprocesados + sus índices originales
+    # del video. Cuando stride > 1, los slots del buffer ya no son frames
+    # contiguos, así que necesitamos rastrear el frame_idx real de cada uno
+    # para reportar la detección en coords de tiempo correctas.
     buffer = []
+    buffer_indices = []
     frame_idx = 0
     evaluated = 0  # nº de frames donde corrimos inferencia (denominador correcto del rate)
+    center = SEQ_LEN // 2
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
 
+        # Submuestreo opcional: leer todos los frames pero alimentar el buffer
+        # sólo cada `stride`. Bajar el costo de inferencia y el footprint del
+        # session de ONNX, que es lo que revienta la RAM en clips largos.
+        if stride > 1 and frame_idx % stride != 0:
+            frame_idx += 1
+            continue
+
         proc = _preprocess_frame(frame)
         buffer.append(proc)
+        buffer_indices.append(frame_idx)
 
-        # Mantener solo los últimos SEQ_LEN frames
+        # Mantener solo los últimos SEQ_LEN frames muestreados
         if len(buffer) > SEQ_LEN:
             buffer.pop(0)
+            buffer_indices.pop(0)
 
-        # Solo correr inferencia cuando tengamos suficientes frames.
-        # Evaluamos TODOS los frames (full-rate) — el submuestreo a stride
-        # para alinear con el stream de personas se hace aguas arriba en
-        # clara.detect_balls_vballnet().
-        center = SEQ_LEN // 2
-        center_frame_idx = frame_idx - center
-        if len(buffer) == SEQ_LEN and center_frame_idx >= 0:
+        if len(buffer) == SEQ_LEN:
             # Stack en formato (1, SEQ_LEN, H, W) - channels-first
             input_tensor = np.stack(buffer, axis=0)[np.newaxis, ...]
             output = session.run(None, {input_name: input_tensor})[0]
@@ -154,7 +166,7 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
 
             det = _postprocess_heatmap(heatmap, threshold, orig_w, orig_h)
             if det is not None:
-                det["frame"] = center_frame_idx
+                det["frame"] = buffer_indices[center]
                 detections.append(det)
 
         frame_idx += 1
@@ -203,9 +215,12 @@ if __name__ == "__main__":
     p.add_argument("--out", default="vballnet_detections.csv",
                    help="CSV de salida")
     p.add_argument("--threshold", type=float, default=HEATMAP_THRESHOLD)
+    p.add_argument("--stride", type=int, default=1,
+                   help="Submuestreo del buffer (1=todos los frames). "
+                        "Subir reduce inferencias y RAM a costa de recall.")
     a = p.parse_args()
 
-    dets = detect_balls(a.video, a.model, threshold=a.threshold)
+    dets = detect_balls(a.video, a.model, threshold=a.threshold, stride=a.stride)
 
     import csv
     with open(a.out, "w", newline="") as f:
