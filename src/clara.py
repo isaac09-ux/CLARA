@@ -116,6 +116,18 @@ def filter_ball_tracks(detections, stride, max_gap=None,
 def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
                        max_height_ratio=0.55, max_width_ratio=0.40,
                        is_ball=False):
+    """Filtro pre-homografía: descarta cajas obviamente inválidas por tamaño
+    o por tocar el borde inferior del frame.
+
+    court_horizon_y queda aceptado por compatibilidad con calibraciones
+    previas pero ya no se usa: la banda fija en píxeles (±5%/+10% del alto)
+    asumía cámara casi frontal, donde la cancha ocupa una franja delgada.
+    En ángulos elevados u oblicuos la cancha cubre cientos de píxeles
+    verticales y la banda rechaza jugadoras reales (un día rechazó 1911
+    detecciones, dejando 1 sola jugadora). El filtro correcto es
+    is_in_court() después de proyectar a coords de cancha, que ya se aplica
+    al armar `filtered` y `ball_clean`.
+    """
     x1, y1, x2, y2 = bbox
     bbox_h = y2 - y1
     bbox_w = x2 - x1
@@ -124,10 +136,6 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
             return "fg_too_large", f"altura {bbox_h/frame_h:.0%}"
         if bbox_w / frame_w > max_width_ratio:
             return "fg_too_large", f"ancho {bbox_w/frame_w:.0%}"
-    if court_horizon_y is not None and y2 < court_horizon_y - (frame_h * 0.05):
-        return "fg_above_horizon", f"y={int(y2)} < {int(court_horizon_y)}"
-    if court_horizon_y is not None and y2 > court_horizon_y + (frame_h * 0.1):
-        return "fg_below_horizon", f"y={int(y2)} > {int(court_horizon_y)}"
     if y2 >= frame_h - 5:
         return "fg_at_edge", "borde inferior"
     return "ok", None
@@ -141,15 +149,19 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
                           frame_h, frame_w, court_horizon_y=None,
                           max_h_ratio=0.55, max_w_ratio=0.40,
                           rejected_counts=None,
-                          threshold=0.5, verbose=True):
+                          threshold=0.5, stride=1, verbose=True):
     """VballNet adapter. Returns CLARA-compatible ball detection list.
 
-    Applies the same foreground filter (court_horizon_y, bottom-edge guard)
-    used for YOLO ball detections so detecciones de tribuna/banca se descartan.
+    Applies the same foreground filter (bottom-edge guard) used for YOLO
+    ball detections so detecciones de tribuna/banca se descartan.
+
+    stride > 1 alimenta el buffer de 9 frames sólo cada N frames del video.
+    Reduce inferencias y RAM ~stride×; el balón salta más entre frames de
+    la secuencia, así que el recall baja proporcionalmente.
     """
     from ball_vballnet import detect_balls
     raw = detect_balls(video_path, model_path,
-                       threshold=threshold, verbose=verbose)
+                       threshold=threshold, stride=stride, verbose=verbose)
     out = []
     for d in raw:
         # bbox sintético desde (x, y, radius) para reusar classify_detection.
@@ -181,6 +193,7 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
 def run(video_path, calibration_path, output_dir="out", stride=5,
         person_conf=0.4, ball_conf=0.10,
         ball_detector="yolo", ball_model_path=None, vballnet_model=None,
+        vballnet_stride=1,
         pose_mode="none",
         save_diagnostic=True):
 
@@ -363,7 +376,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             raise FileNotFoundError(
                 "Para --ball-detector vballnet necesitas --vballnet-model <ruta .onnx>"
             )
-        print(f"\n[•] Detectando balón con VballNet...")
+        print(f"\n[•] Detectando balón con VballNet (stride={vballnet_stride})...")
         ball_detections.extend(
             detect_balls_vballnet(video_path, vballnet_model, H, ppm,
                                    court_w, court_h,
@@ -372,6 +385,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                                    max_h_ratio=max_h_ratio,
                                    max_w_ratio=max_w_ratio,
                                    rejected_counts=rejected_counts,
+                                   stride=vballnet_stride,
                                    verbose=True)
         )
 
@@ -808,6 +822,10 @@ if __name__ == "__main__":
     p.add_argument("--ball-detector", choices=["yolo", "vballnet"], default="yolo")
     p.add_argument("--ball-model", default=None)
     p.add_argument("--vballnet-model", default=None)
+    p.add_argument("--vballnet-stride", type=int, default=1,
+                   help="Submuestreo del buffer de VballNet (1=todos los frames). "
+                        "Subir a 2-3 reduce RAM e inferencias en clips largos a "
+                        "costa de recall.")
     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
     a = p.parse_args()
     run(a.video, a.calibration, a.out, a.stride,
@@ -815,4 +833,5 @@ if __name__ == "__main__":
         ball_detector=a.ball_detector,
         ball_model_path=a.ball_model,
         vballnet_model=a.vballnet_model,
+        vballnet_stride=a.vballnet_stride,
         pose_mode=a.pose)

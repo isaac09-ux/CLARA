@@ -15,19 +15,20 @@ video.mp4
                      │
                      ▼
 ┌─────────────────────────────────────────────────┐
-│  2. Foreground filter                           │
+│  2. Foreground filter (pre-projection)          │
 │     - Reject bboxes > 55% frame height          │
 │     - Reject bboxes > 40% frame width           │
-│     - Reject below court_horizon_y              │
 │     - Reject touching bottom edge               │
 └────────────────────┬────────────────────────────┘
                      │
                      ▼
 ┌─────────────────────────────────────────────────┐
-│  3. Homography projection                       │
+│  3. Homography projection + in-court filter     │
 │     - Project bbox feet (people) or center      │
 │       (ball) to court coordinates in meters     │
 │     - Drop projections outside court (margin)   │
+│     - Replaces the old court_horizon_y band,    │
+│       which broke at elevated/oblique angles    │
 └────────────────────┬────────────────────────────┘
                      │
                      ▼
@@ -65,7 +66,8 @@ CLARA requires a one-time calibration per camera position. The calibration JSON 
 
 - 4 pixel corners of the court (or half-court) → court coordinates in meters
 - A 3×3 homography matrix `H` derived from the corners
-- Optional: `court_horizon_y` for foreground filtering, `half_court: true` for partial views
+- Optional: `half_court: true` for partial views
+- `court_horizon_y` is accepted for legacy calibrations but ignored as of v0.6.1 — see Tradeoffs
 
 The convention for full court (9×18 m):
 - `cercana_izq, cercana_der` → bottom of frame (closest sideline)
@@ -94,5 +96,6 @@ The score tells you which runs are publishable and which need re-grabbing. It's 
 ## Tradeoffs
 
 - **Stride**: higher = faster but loses tracking continuity. Default 5 = 6 Hz sampling, sufficient for zone analytics, not for fast events.
-- **Foreground filter**: aggressive filtering risks dropping real players in low camera angles. Tune via calibration JSON.
+- **Foreground filter**: bbox-size and bottom-edge guards only. The earlier `court_horizon_y` band assumed a flat-ish viewing angle; on elevated/oblique cameras the court spans ~240 px vertically while the band accepted only ~108 px, so it threw away most players. Filtering now happens post-projection via `is_in_court()`, which uses the homography to test actual court coordinates.
+- **VballNet RAM**: full-rate inference on long clips can run the ONNX session out of memory mid-video. Pass `--vballnet-stride 2` (or higher) to feed the 9-frame buffer only every Nth video frame — linear cost/RAM savings at the price of recall.
 - **Ball geometry**: balls projected via centroid land outside court when high in air. This is inherent — single-camera homography assumes ground plane.
