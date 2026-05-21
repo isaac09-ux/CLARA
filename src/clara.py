@@ -124,6 +124,8 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
             return "fg_too_large", f"altura {bbox_h/frame_h:.0%}"
         if bbox_w / frame_w > max_width_ratio:
             return "fg_too_large", f"ancho {bbox_w/frame_w:.0%}"
+    if court_horizon_y is not None and y2 < court_horizon_y - (frame_h * 0.05):
+        return "fg_above_horizon", f"y={int(y2)} < {int(court_horizon_y)}"
     if court_horizon_y is not None and y2 > court_horizon_y + (frame_h * 0.1):
         return "fg_below_horizon", f"y={int(y2)} > {int(court_horizon_y)}"
     if y2 >= frame_h - 5:
