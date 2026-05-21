@@ -77,7 +77,7 @@ def _postprocess_heatmap(heatmap, threshold=HEATMAP_THRESHOLD,
 
 
 def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
-                 stride=1, verbose=True):
+                 verbose=True):
     """
     Corre VballNet en un video y devuelve detecciones de balón frame por frame.
 
@@ -85,9 +85,6 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
         video_path: ruta al video .mp4
         model_path: ruta al modelo VballNet .onnx
         threshold: umbral del heatmap (0-1). Default 0.5.
-        stride: procesar 1 de cada N frames (default 1 = todos).
-                Nota: VballNet requiere secuencias consecutivas, así que stride
-                solo afecta cuántos frames se EVALÚAN, no la ventana de input.
         verbose: imprimir progreso.
 
     Returns:
@@ -139,14 +136,12 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
             buffer.pop(0)
 
         # Solo correr inferencia cuando tengamos suficientes frames.
-        # Stride se aplica al frame CENTRAL (el que se reporta) para que las
-        # detecciones de balón caigan en los mismos índices que el stream de
-        # personas (ultralytics vid_stride=N emite frames en 0, N, 2N, ...).
+        # Evaluamos TODOS los frames (full-rate) — el submuestreo a stride
+        # para alinear con el stream de personas se hace aguas arriba en
+        # clara.detect_balls_vballnet().
         center = SEQ_LEN // 2
         center_frame_idx = frame_idx - center
-        if (len(buffer) == SEQ_LEN
-                and center_frame_idx >= 0
-                and center_frame_idx % stride == 0):
+        if len(buffer) == SEQ_LEN and center_frame_idx >= 0:
             # Stack en formato (1, SEQ_LEN, H, W) - channels-first
             input_tensor = np.stack(buffer, axis=0)[np.newaxis, ...]
             output = session.run(None, {input_name: input_tensor})[0]
@@ -172,7 +167,7 @@ def detect_balls(video_path, model_path, threshold=HEATMAP_THRESHOLD,
     if verbose:
         rate = len(detections) / max(evaluated, 1) * 100
         print(f"[VballNet] ✓ {len(detections)} balones / {evaluated} frames "
-              f"evaluados ({rate:.1f}%) — stride={stride}, video={frame_idx} frames")
+              f"evaluados ({rate:.1f}%) — video={frame_idx} frames")
 
     return detections
 

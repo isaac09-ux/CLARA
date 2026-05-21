@@ -147,7 +147,8 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
     """
     from ball_vballnet import detect_balls
     raw = detect_balls(video_path, model_path,
-                       threshold=threshold, stride=stride, verbose=verbose)
+                       threshold=threshold, verbose=verbose)
+    raw = [d for d in raw if d["frame"] % stride == 0]
     out = []
     for d in raw:
         # bbox sintético desde (x, y, radius) para reusar classify_detection.
