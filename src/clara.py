@@ -141,7 +141,7 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
                           frame_h, frame_w, court_horizon_y=None,
                           max_h_ratio=0.55, max_w_ratio=0.40,
                           rejected_counts=None,
-                          threshold=0.5, stride=1, verbose=True):
+                          threshold=0.5, verbose=True):
     """VballNet adapter. Returns CLARA-compatible ball detection list.
 
     Applies the same foreground filter (court_horizon_y, bottom-edge guard)
@@ -150,7 +150,6 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
     from ball_vballnet import detect_balls
     raw = detect_balls(video_path, model_path,
                        threshold=threshold, verbose=verbose)
-    raw = [d for d in raw if d["frame"] % stride == 0]
     out = []
     for d in raw:
         # bbox sintético desde (x, y, radius) para reusar classify_detection.
@@ -373,7 +372,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                                    max_h_ratio=max_h_ratio,
                                    max_w_ratio=max_w_ratio,
                                    rejected_counts=rejected_counts,
-                                   stride=stride, verbose=True)
+                                   verbose=True)
         )
 
     # ─── Filtrado de tracks ───
