@@ -1,5 +1,5 @@
 """
-CLARA v0.6 — Multimodal scouting
+CLARA v0.6.2 — Multimodal scouting
 Tentáculo de visión por computadora de LUCIA · Las Chispas.
 
 Cambios v0.5.1 → v0.6:
@@ -115,9 +115,9 @@ def filter_ball_tracks(detections, stride, max_gap=None,
 
 def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
                        max_height_ratio=0.55, max_width_ratio=0.40,
-                       is_ball=False):
+                       is_ball=False, edge_reject_height_ratio=0.35):
     """Filtro pre-homografía: descarta cajas obviamente inválidas por tamaño
-    o por tocar el borde inferior del frame.
+    o por tocar el borde inferior siendo además grandes (público cercano).
 
     court_horizon_y queda aceptado por compatibilidad con calibraciones
     previas pero ya no se usa: la banda fija en píxeles (±5%/+10% del alto)
@@ -127,6 +127,16 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
     detecciones, dejando 1 sola jugadora). El filtro correcto es
     is_in_court() después de proyectar a coords de cancha, que ya se aplica
     al armar `filtered` y `ball_clean`.
+
+    fg_at_edge (corregido v0.6.2): antes rechazaba CUALQUIER caja cuyo
+    borde inferior tocara el frame. En video de baja resolución (848x478)
+    las jugadoras llenan buena parte del alto y muchas tocan el borde en
+    algún frame — el filtro mataba miles de detecciones válidas (3699 en
+    un caso real, dejando 0 tracks). Ahora solo rechaza si la caja toca el
+    borde Y ADEMÁS es grande (>35% del alto), que es el patrón de un
+    espectador/entrenador cortado en primer plano. Una jugadora lejana
+    cuyos pies se cortan un poco en el borde es una detección válida y se
+    conserva; si quedara fuera de cancha, is_in_court() la filtra después.
     """
     x1, y1, x2, y2 = bbox
     bbox_h = y2 - y1
@@ -137,7 +147,10 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
         if bbox_w / frame_w > max_width_ratio:
             return "fg_too_large", f"ancho {bbox_w/frame_w:.0%}"
     if y2 >= frame_h - 5:
-        return "fg_at_edge", "borde inferior"
+        # Solo rechazar si además es grande (primer plano cortado).
+        # Cajas normales/chicas en el borde = jugadora lejana válida.
+        if not is_ball and bbox_h / frame_h > edge_reject_height_ratio:
+            return "fg_at_edge", f"borde + grande ({bbox_h/frame_h:.0%})"
     return "ok", None
 
 
@@ -218,7 +231,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     Hf = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    print(f"\n┌─ CLARA v0.6 ─────────────────────────────")
+    print(f"\n┌─ CLARA v0.6.2 ─────────────────────────────")
     print(f"│ Video: {Path(video_path).name}")
     print(f"│ {W}x{Hf} @ {fps:.1f}fps | {total_frames/fps/60:.2f} min")
     print(f"│ Cancha: {court_w}x{court_h}m {'[HALF]' if half_court else '[FULL]'}")
@@ -483,7 +496,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             pass
 
     metrics = {
-        "clara_version": "0.6",
+        "clara_version": "0.6.2",
         "video": Path(video_path).name,
         "duration_s": round(total_frames / fps, 1),
         "duration_min": round(total_frames / fps / 60, 2),
@@ -812,7 +825,7 @@ def save_pose_sample(video_path, filtered_tracks, path):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="CLARA v0.6 — multimodal scouting")
+    p = argparse.ArgumentParser(description="CLARA v0.6.2 — multimodal scouting")
     p.add_argument("video")
     p.add_argument("--calibration", required=True)
     p.add_argument("--out", default="out")
