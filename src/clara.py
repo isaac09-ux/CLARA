@@ -545,9 +545,13 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     (out / "raw_tracks.json").write_text(json.dumps(
         {str(tid): s for tid, s in raw_tracks.items()}, indent=2))
     # Oclusiones de voleibol (red, bloqueos) pasan facil de 1.5 s y la jugadora
-    # se mueve mas de 2.5 m durante una larga: por eso 3 s / 4 m.
+    # se mueve mas de 2.5 m durante una larga. Barrido sobre raw_tracks.json de
+    # test.mp4: 3s/4m deja 14 tracks (6 jugadoras reales), 5s/6m baja a 8 SIN
+    # subir el spread espacial maximo (4.08 m, identico) -> fusiona fragmentos
+    # sin unir jugadoras distintas; 8s/8m ya colapsa a 4 (over-merge). 5/6 es
+    # el optimo medido.
     raw_tracks = stitch_tracks(raw_tracks, fps, stride,
-                               max_gap_s=3.0, max_jump_m=4.0)
+                               max_gap_s=5.0, max_jump_m=6.0)
     n_stitched = n_tracks_before_stitch - len(raw_tracks)
 
     # ─── Filtrado de tracks ───
