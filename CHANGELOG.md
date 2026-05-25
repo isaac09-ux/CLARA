@@ -1,6 +1,34 @@
 # Changelog
 
-## v0.6.2 (current) — Filtro de borde inferior (fg_at_edge)
+## v0.7.0 (current) — Identificación de jugadora por número de jersey
+
+- NEW: módulo `src/jersey_id.py`. Convierte un track anónimo de ByteTrack en
+  una jugadora con nombre. Lee el número del jersey con OCR (easyocr) y cruza
+  contra un roster conocido. Run con `--identify --roster roster.json`.
+- Diseño: **votación por track, no por frame**. El número solo es legible en
+  una fracción de los frames; cada lectura de OCR se acumula como un voto
+  ponderado por confianza sobre el track, y el número con más peso gana. Una
+  mala lectura aislada queda enterrada por las buenas.
+- **Conjunto cerrado**: solo cuentan votos por números presentes en el roster.
+  Un OCR que lee un número inexistente se descarta — filtra casi todos los
+  errores sin entrenar nada. Consecuencia útil: las rivales (fuera del roster)
+  se quedan como tracks anónimos, que es lo deseable para scouting.
+- Reusa la pose de `--pose rtmlib` cuando está disponible: hombros (5,6) y
+  caderas (11,12) recortan la zona del número con precisión. Sin pose, cae a
+  un recorte por proporciones del bbox.
+- Preprocesamiento con CLAHE para rescatar números de bajo contraste (kit Casa
+  hueso/rosa palo).
+- Costo de OCR acotado por `--id-stride` (cada N muestras) y por un tope
+  interno de observaciones por track (`max_obs_per_track`).
+- JSON: cada `tracks[]` gana un campo `identity` con `{number, name,
+  confidence, votes, weight}`; nuevo campo raíz `identified_players`.
+- ADITIVO: con `--identify` apagado, CLARA se comporta idéntico a v0.6.2.
+- Nuevo CLI: `--identify`, `--roster <path>` (default `roster.json`),
+  `--id-stride N` (default 6). Nueva dependencia opcional: `easyocr`.
+- Limitación conocida: una rival con un número que coincide con el roster se
+  etiqueta mal. Mitigación: filtrar por `side` (A/B) en el reporte.
+
+## v0.6.2 — Filtro de borde inferior (fg_at_edge)
 
 - FIX: `classify_detection` ya no rechaza toda caja cuyo borde inferior toque el frame. El check `y2 >= frame_h - 5` descartaba CUALQUIER detección pegada al borde, asumiendo que era público cortado. En video de baja resolución (p.ej. 848x478) las jugadoras llenan buena parte del alto y muchas tocan el borde en algún frame — el filtro tiró 3699 detecciones válidas en un caso real, dejando 0 tracks y score 0/100. Ahora `fg_at_edge` solo rechaza si la caja toca el borde **y además** es grande (>35% del alto), patrón de un espectador/entrenador en primer plano. Jugadoras lejanas cuyos pies se cortan un poco se conservan; si quedaran fuera de cancha, `is_in_court()` las filtra tras la proyección. Los balones tocando el borde ya no se descartan (antes: `ball_fg_at_edge`).
 - Nuevo parámetro `edge_reject_height_ratio` en `classify_detection` (default 0.35).

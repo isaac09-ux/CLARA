@@ -1,5 +1,5 @@
 """
-CLARA v0.7 — Multimodal scouting + auto-calibracion
+CLARA v0.6.2 — Multimodal scouting
 Tentáculo de visión por computadora de LUCIA · Las Chispas.
 
 Cambios v0.5.1 → v0.6:
@@ -201,89 +201,6 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
 
 
 # ============================================================
-#  TRACK STITCHING
-# ============================================================
-def stitch_tracks(raw_tracks, fps, stride, max_gap_s=1.5, max_jump_m=2.5):
-    """
-    Cose tracks fragmentados. ByteTrack parte una jugadora en varios IDs
-    cuando se ocluye; esta funcion une los pedazos.
-
-    Dos tracks A y B se unen si:
-      - B empieza DESPUES de que A termina (sin solaparse)
-      - el hueco temporal es <= max_gap_s segundos
-      - la distancia entre el ultimo punto de A y el primero de B es
-        <= max_jump_m metros (la jugadora no se teletransporta)
-
-    Args:
-        raw_tracks: dict {tid: [samples]} — cada sample tiene 'frame',
-                    'court_x', 'court_y'
-        fps: frames por segundo del video
-        stride: cada cuantos frames se muestreo
-        max_gap_s: hueco temporal maximo para considerar union
-        max_jump_m: salto espacial maximo permitido
-
-    Returns:
-        dict {tid: [samples]} con los tracks cosidos.
-    """
-    if len(raw_tracks) < 2:
-        return raw_tracks
-
-    # Ordenar samples de cada track por frame
-    tracks = {}
-    for tid, samples in raw_tracks.items():
-        tracks[tid] = sorted(samples, key=lambda s: s["frame"])
-
-    max_gap_frames = max_gap_s * fps
-
-    # Repetir hasta que no haya mas uniones (un track puede coser
-    # varios pedazos en cadena)
-    merged_any = True
-    while merged_any:
-        merged_any = False
-        tids = list(tracks.keys())
-
-        for i in range(len(tids)):
-            tid_a = tids[i]
-            if tid_a not in tracks:
-                continue
-            a = tracks[tid_a]
-            a_end_frame = a[-1]["frame"]
-            a_end_pos = (a[-1]["court_x"], a[-1]["court_y"])
-
-            best_match = None
-            best_gap = None
-
-            for j in range(len(tids)):
-                tid_b = tids[j]
-                if tid_b == tid_a or tid_b not in tracks:
-                    continue
-                b = tracks[tid_b]
-                b_start_frame = b[0]["frame"]
-                # B debe empezar despues de que A termina
-                gap = b_start_frame - a_end_frame
-                if gap <= 0 or gap > max_gap_frames:
-                    continue
-                # distancia espacial entre fin de A e inicio de B
-                b_start_pos = (b[0]["court_x"], b[0]["court_y"])
-                dist = np.hypot(a_end_pos[0] - b_start_pos[0],
-                                a_end_pos[1] - b_start_pos[1])
-                if dist > max_jump_m:
-                    continue
-                # de los candidatos, preferir el de menor hueco temporal
-                if best_gap is None or gap < best_gap:
-                    best_gap = gap
-                    best_match = tid_b
-
-            if best_match is not None:
-                # coser B dentro de A
-                tracks[tid_a] = a + tracks[best_match]
-                del tracks[best_match]
-                merged_any = True
-
-    return tracks
-
-
-# ============================================================
 #  PIPELINE PRINCIPAL
 # ============================================================
 def run(video_path, calibration_path, output_dir="out", stride=5,
@@ -291,38 +208,12 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         ball_detector="yolo", ball_model_path=None, vballnet_model=None,
         vballnet_stride=1,
         pose_mode="none",
-        court_model=None,
         save_diagnostic=True):
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Auto-calibracion: si se pasa court_model, intentar calibrar solo.
-    # Si funciona, se usa esa calibracion. Si falla, cae al cal.json manual
-    # (si existe) o aborta pidiendo MIRA.
-    if court_model is not None:
-        from court_keypoints import auto_calibrate
-        print("[•] Intentando auto-calibracion con modelo de cancha...")
-        auto_cal = auto_calibrate(video_path, court_model)
-        if auto_cal is not None:
-            cal = auto_cal
-            (out / "cal_auto.json").write_text(json.dumps(cal, indent=2))
-            print(f"[•] Auto-calibracion OK — guardada en {out/'cal_auto.json'}")
-        elif calibration_path is not None:
-            print("[•] Auto-calibracion fallo — usando cal.json manual.")
-            cal = json.loads(Path(calibration_path).read_text())
-        else:
-            raise RuntimeError(
-                "Auto-calibracion fallo y no se dio --calibration manual. "
-                "Calibra con MIRA y pasa el cal.json."
-            )
-    else:
-        if calibration_path is None:
-            raise RuntimeError(
-                "Falta calibracion: pasa --calibration cal.json o "
-                "--court-model modelo.pt"
-            )
-        cal = json.loads(Path(calibration_path).read_text())
+    cal = json.loads(Path(calibration_path).read_text())
     H = np.array(cal["homography_matrix"])
     court_w, court_h = cal["court_size_m"]
     ppm = cal["pixels_per_meter"]
@@ -340,7 +231,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     Hf = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    print(f"\n┌─ CLARA v0.7 ─────────────────────────────")
+    print(f"\n┌─ CLARA v0.6.2 ─────────────────────────────")
     print(f"│ Video: {Path(video_path).name}")
     print(f"│ {W}x{Hf} @ {fps:.1f}fps | {total_frames/fps/60:.2f} min")
     print(f"│ Cancha: {court_w}x{court_h}m {'[HALF]' if half_court else '[FULL]'}")
@@ -367,16 +258,10 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
 
     classes_to_track = [0] if (ball_detector != "yolo" or ball_model_path) else [0, 32]
 
-    # Usar la config de ByteTrack tuneada de CLARA (track_buffer alto para
-    # aguantar oclusiones). Si el archivo no esta junto al script, cae al
-    # bytetrack.yaml default de Ultralytics.
-    tracker_cfg = Path(__file__).parent / "bytetrack_clara.yaml"
-    tracker_arg = str(tracker_cfg) if tracker_cfg.exists() else "bytetrack.yaml"
-
     results = person_model.track(
         source=video_path,
         persist=True,
-        tracker=tracker_arg,
+        tracker="bytetrack.yaml",
         classes=classes_to_track,
         conf=min(person_conf, ball_conf),
         verbose=False,
@@ -517,15 +402,6 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                                    verbose=True)
         )
 
-    # ─── Track stitching: cose tracks fragmentados ───
-    # ByteTrack parte una jugadora en varios IDs cuando hay oclusion.
-    # Si un track termina donde/cuando otro empieza, y la posicion es
-    # coherente, son la misma jugadora -> se unen.
-    n_tracks_before_stitch = len(raw_tracks)
-    raw_tracks = stitch_tracks(raw_tracks, fps, stride,
-                               max_gap_s=1.5, max_jump_m=2.5)
-    n_stitched = n_tracks_before_stitch - len(raw_tracks)
-
     # ─── Filtrado de tracks ───
     min_samples = 15
     filtered = {}
@@ -620,7 +496,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             pass
 
     metrics = {
-        "clara_version": "0.7",
+        "clara_version": "0.6.2",
         "video": Path(video_path).name,
         "duration_s": round(total_frames / fps, 1),
         "duration_min": round(total_frames / fps / 60, 2),
@@ -631,7 +507,6 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "ball_detector": ball_detector,
         "pose_mode": pose_mode,
         "raw_tracks": len(raw_tracks),
-        "tracks_stitched": n_stitched,
         "filtered_tracks": len(filtered),
         "rejected_detections": dict(rejected_counts),
         "ball_detections_oncourt": len(ball_clean),
@@ -707,8 +582,6 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
 
     print(f"\n┌─ Resultado ────────────────────────────")
     print(f"│ Tracks limpios: {len(filtered)} (de {len(raw_tracks)})")
-    if n_stitched > 0:
-        print(f"│ Tracks cosidos: {n_stitched} fragmentos unidos")
     print(f"│ Balones: {len(ball_clean)} ({metrics['ball_detection_rate']*100:.1f}%) "
           f"[{ball_detector}]")
     if pose_estimator:
@@ -952,15 +825,9 @@ def save_pose_sample(video_path, filtered_tracks, path):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="CLARA v0.7 — multimodal scouting")
+    p = argparse.ArgumentParser(description="CLARA v0.6.2 — multimodal scouting")
     p.add_argument("video")
-    p.add_argument("--calibration", default=None,
-                   help="cal.json manual (de MIRA). Opcional si se usa "
-                        "--court-model.")
-    p.add_argument("--court-model", default=None,
-                   help="Modelo YOLOv8-pose de cancha para auto-calibracion. "
-                        "Si se da, CLARA calibra sola; si falla, cae a "
-                        "--calibration.")
+    p.add_argument("--calibration", required=True)
     p.add_argument("--out", default="out")
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--person-conf", type=float, default=0.4)
@@ -974,13 +841,10 @@ if __name__ == "__main__":
                         "costa de recall.")
     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
     a = p.parse_args()
-    if a.calibration is None and a.court_model is None:
-        p.error("Se requiere --calibration cal.json o --court-model modelo.pt")
     run(a.video, a.calibration, a.out, a.stride,
         a.person_conf, a.ball_conf,
         ball_detector=a.ball_detector,
         ball_model_path=a.ball_model,
         vballnet_model=a.vballnet_model,
         vballnet_stride=a.vballnet_stride,
-        pose_mode=a.pose,
-        court_model=a.court_model)
+        pose_mode=a.pose)

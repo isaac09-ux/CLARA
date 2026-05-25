@@ -1,0 +1,14 @@
+{
+  "_comment": "Copia este archivo a roster.json (en la raíz del repo) y pon tus jugadoras reales. La llave es el numero de jersey, el valor es el nombre. Solo estos numeros se reconocen — un OCR que lea un numero fuera de esta lista se descarta. Las jugadoras rival NO van aqui: se quedan como tracks anonimos a proposito.",
+  "team": "Las Chispas — Lisboa",
+  "players": {
+    "1": "Jugadora 1",
+    "3": "Jugadora 3",
+    "5": "Jugadora 5",
+    "7": "Jugadora 7",
+    "9": "Jugadora 9",
+    "10": "Jugadora 10",
+    "11": "Jugadora 11",
+    "12": "Jugadora 12"
+  }
+}

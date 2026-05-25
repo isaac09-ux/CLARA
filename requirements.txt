@@ -7,3 +7,7 @@ onnxruntime>=1.16.0
 
 # Optional: pose estimation
 rtmlib>=0.0.13
+
+# Optional: jersey number identification (--identify)
+# easyocr usa torch, que ultralytics ya instala — no añade peso pesado nuevo.
+easyocr>=1.7.0
