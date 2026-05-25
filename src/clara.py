@@ -540,8 +540,14 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     # Si un track termina donde/cuando otro empieza, y la posicion es
     # coherente, son la misma jugadora -> se unen.
     n_tracks_before_stitch = len(raw_tracks)
+    # Volcar los tracks crudos (pre-cosido) para poder iterar los parametros
+    # de stitch offline sin re-trackear, que es la parte cara del pipeline.
+    (out / "raw_tracks.json").write_text(json.dumps(
+        {str(tid): s for tid, s in raw_tracks.items()}, indent=2))
+    # Oclusiones de voleibol (red, bloqueos) pasan facil de 1.5 s y la jugadora
+    # se mueve mas de 2.5 m durante una larga: por eso 3 s / 4 m.
     raw_tracks = stitch_tracks(raw_tracks, fps, stride,
-                               max_gap_s=1.5, max_jump_m=2.5)
+                               max_gap_s=3.0, max_jump_m=4.0)
     n_stitched = n_tracks_before_stitch - len(raw_tracks)
 
     # ─── Filtrado de tracks ───
@@ -648,7 +654,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "half_court": half_court,
         "ball_detector": ball_detector,
         "pose_mode": pose_mode,
-        "raw_tracks": len(raw_tracks),
+        "raw_tracks": n_tracks_before_stitch,
+        "tracks_after_stitch": len(raw_tracks),
         "tracks_stitched": n_stitched,
         "filtered_tracks": len(filtered),
         "rejected_detections": dict(rejected_counts),
@@ -724,7 +731,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                      "BAJO — interpreta con cuidado")
 
     print(f"\n┌─ Resultado ────────────────────────────")
-    print(f"│ Tracks limpios: {len(filtered)} (de {len(raw_tracks)})")
+    print(f"│ Tracks limpios: {len(filtered)} "
+          f"(de {n_tracks_before_stitch} crudos → {len(raw_tracks)} tras cosido)")
     if n_stitched > 0:
         print(f"│ Tracks cosidos: {n_stitched} fragmentos unidos")
     print(f"│ Balones: {len(ball_clean)} ({metrics['ball_detection_rate']*100:.1f}%) "
@@ -772,16 +780,30 @@ def compute_quality_score(tracks, zones, ball_frames, rejected,
         accept_pts = 0
     breakdown["filtrado"] = f"{accept_pts}/15 (rechazos: {sum(rejected.values())})"
 
+    # Termometro honesto de continuidad de identidad. Blend 50/50 de dos
+    # señales que NO se contradicen entre si:
+    #   - persistencia: de las N tracks principales (las expected_tracks mas
+    #     largas, ignorando la cola de fragmentos espurios), que fraccion del
+    #     video duran. 50%+ = credito lleno.
+    #   - consolidacion: que tan cerca quedo el #tracks del esperado. Penaliza
+    #     tanto sobre-segmentar (IDs partidos) como sub-detectar.
+    # El viejo `mean(duracion)/video` mezclaba ambos males y peleaba contra la
+    # sub-metrica `tracks`: mas fragmentos subian `tracks` y hundian este.
     if tracks and total_samples > 0:
-        avg_samples = np.mean([len(s) for s in tracks.values()])
-        presence_ratio = avg_samples / total_samples
-        if presence_ratio >= 0.50:
-            stability_pts = 10
-        else:
-            stability_pts = int(presence_ratio / 0.50 * 10)
+        lengths = sorted((len(s) for s in tracks.values()), reverse=True)
+        top = lengths[:expected_tracks]
+        persist_ratio = (sum(top) / len(top)) / total_samples
+        persist_score = min(1.0, persist_ratio / 0.50)
+        consol_score = max(0.0, 1.0 - abs(len(tracks) - expected_tracks)
+                                       / expected_tracks)
+        stability_pts = int(round(10 * (0.5 * persist_score
+                                        + 0.5 * consol_score)))
     else:
+        persist_score = consol_score = 0.0
         stability_pts = 0
-    breakdown["estabilidad"] = f"{stability_pts}/10"
+    breakdown["estabilidad"] = (
+        f"{stability_pts}/10 (persist {persist_score:.2f}, "
+        f"consol {consol_score:.2f})")
 
     total = track_pts + zone_pts + ball_pts + accept_pts + stability_pts
     return total, breakdown

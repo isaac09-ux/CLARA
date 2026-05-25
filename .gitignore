@@ -7,6 +7,7 @@ yolov8n.pt
 out/
 out_*/
 results/
+results_*/
 *.json.bak
 
 # Videos
