@@ -1,6 +1,63 @@
 # Changelog
 
-## Unreleased — Migración del detector a YOLO11
+## Unreleased
+
+### Tracking y métrica de calidad
+
+Contexto: una corrida sobre `data/test.mp4` (media cancha 9×9, 108 s) producía
+18 tracks "limpios" para ~6 jugadoras reales, balón ~0% y `estabilidad 1/10`.
+La investigación reveló que parte del diagnóstico estaba *roto*, no solo el
+tracking. Los cambios y su razón:
+
+- **Métrica `estabilidad` reescrita** (`compute_quality_score`). La vieja era
+  `media(duración_de_track) / total_de_muestras`, con 50% para sacar 10/10.
+  Eso medía *presencia*, no *continuidad de identidad*, y marcaba ~1/10 hiciera
+  lo que hiciera el tracker (jugadoras que entran/salen nunca promedian 50% del
+  clip). Peor: **peleaba contra la sub-métrica `tracks`** — más fragmentos subían
+  `tracks` (premia cantidad) y hundían `estabilidad` (baja la media). La nueva es
+  un **blend 50/50**: `persistencia` (qué fracción del video duran las
+  `expected_tracks` más largas, ignorando la cola de fragmentos) + `consolidación`
+  (`1 - |#tracks - esperado| / esperado`, penaliza sobre-segmentar Y sub-detectar).
+  El breakdown ahora expone ambos componentes. Si tocas esta métrica, recuerda:
+  debe *responder* a la fragmentación, no leer constante.
+
+- **`stitch_tracks` aflojado a `max_gap_s=5.0`, `max_jump_m=6.0`** (antes 1.5/2.5,
+  pasó por 3.0/4.0). Voleibol tiene oclusiones largas (red, bloqueos) que parten
+  una jugadora en varios IDs. Los valores se eligieron **midiendo, no a ojo**: un
+  barrido sobre `raw_tracks.json` mostró que 5/6 baja de 14→8 tracks SIN aumentar
+  el *spread espacial máximo* (4.08 m, idéntico a 3/4) — o sea fusiona fragmentos
+  sin unir jugadoras distintas; a 8/8 ya colapsa a 4 (menos que las 6 reales =
+  over-merge). Validado end-to-end: 8 tracks, `estabilidad 6/10`, CALIDAD 70→80.
+
+- **`match_thresh` en `bytetrack_clara.yaml` subido 0.85 → 0.90.** OJO, la
+  intuición engaña: en Ultralytics el costo de asociación es `1 - IoU` y un par
+  se acepta si `costo <= match_thresh` (ver `trackers/utils/matching.py`), o sea
+  **IoU >= 1 - match_thresh**. Por eso *subir* el umbral lo hace MÁS permisivo
+  (0.90 acepta hasta IoU≥0.10) y reduce los cambios de ID. *Bajarlo* (p.ej. a 0.80)
+  lo haría más estricto (IoU≥0.20) y EMPEORARÍA la fragmentación. No lo bajes
+  "para ser más estricto" sin leer el código primero.
+
+- **`track_buffer` subido 90 → 300** (`bytetrack_clara.yaml`). Desde que el tracker
+  procesa el video completo (sin saltar frames), 90 frames eran solo ~3 s a 30 fps.
+  300 (~10 s) recupera la tolerancia a oclusión que daba el modo viejo.
+
+- **`raw_tracks.json` se vuelca al `--out`** (tracks crudos pre-cosido). Permite
+  iterar los parámetros de stitch *offline* importando `stitch_tracks`, sin
+  re-trackear (lo caro: ~15 min/corrida). Es la herramienta que se usó para el
+  barrido de arriba.
+
+- **Fix de etiqueta**: el campo `"raw_tracks"` del JSON reportaba el conteo
+  *post-cosido* (porque `raw_tracks` se reasignaba antes de reportarlo). Ahora
+  reporta el crudo real y se añade `"tracks_after_stitch"`.
+
+- **Hallazgo de detección de balón** (no es cambio de código, es para quien corra
+  esto): el modo `--ball-detector yolo` base tiene ~0% recall en voleibol y es el
+  peor caso. **VballNet es obligatorio para el balón** (`--ball-detector vballnet
+  --vballnet-model <.onnx>`): pasó de 0.9% a 12.9% on-court en `test.mp4`. La
+  mayoría de los "tracks crudos" descartados (≈78%) son el equipo del fondo
+  (inherente a media cancha) + público, no fragmentación.
+
+### Migración del detector a YOLO11
 
 - Detector de personas migrado de YOLOv8 a **YOLO11m** (`src/clara.py`,
   `person_model = YOLO("yolo11m.pt")`). Mejor recall en jugadoras
