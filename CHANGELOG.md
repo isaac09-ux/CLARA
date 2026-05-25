@@ -1,6 +1,19 @@
 # Changelog
 
-## v0.7.0 (current) — Identificación de jugadora por número de jersey
+## Unreleased — Migración del detector a YOLO11
+
+- Detector de personas migrado de YOLOv8 a **YOLO11m** (`src/clara.py`,
+  `person_model = YOLO("yolo11m.pt")`). Mejor recall en jugadoras
+  chicas/lejanas/borrosas de footage de celular; menos huecos en los tracks.
+- El balón en modo `--ball-detector yolo` base ahora sale de la clase COCO 32
+  del mismo modelo YOLO11m.
+- `clara_train_colab.ipynb`: el detector de balón custom ahora se entrena sobre
+  base `yolo11m.pt` (antes `yolov8n.pt`).
+- Calibración de cancha (`court_keypoints.py`) y docs actualizados a nomenclatura
+  YOLO11. Los modelos entrenados existentes (`clara_balon_v1.pt`, court-pose)
+  siguen cargando, pero para migrarlos de verdad hay que reentrenar sobre base v11.
+
+## v0.7.0 — Identificación de jugadora por número de jersey
 
 - NEW: módulo `src/jersey_id.py`. Convierte un track anónimo de ByteTrack en
   una jugadora con nombre. Lee el número del jersey con OCR (easyocr) y cruza

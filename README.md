@@ -18,10 +18,10 @@ CLARA processes match video into structured scouting data: player tracks, ball t
 
 ## What CLARA does
 
-- **Player tracking** via YOLOv8 + ByteTrack
+- **Player tracking** via YOLO11 + ByteTrack
 - **Ball detection** in 3 modes:
-  - YOLOv8 base (no setup, low recall)
-  - YOLOv8 custom (high recall in trained gym, requires labeling)
+  - YOLO11 base (no setup, low recall)
+  - YOLO11 custom (high recall in trained gym, requires labeling)
   - **VballNet** (motion-based, ~70% recall in any gym, **no training needed**)
 - **Pose estimation** via RTMPose (optional): 17 keypoints per player
 - **Player identification** (optional): reads jersey numbers via OCR and
@@ -43,10 +43,10 @@ python src/setup_calibration.py video.mp4 --out cal.json
 
 # 3. Process video (3 modes)
 
-# A — Solo YOLOv8 base (rápido, low recall en balón)
+# A — Solo YOLO11 base (rápido, low recall en balón)
 python src/clara.py video.mp4 --calibration cal.json --out results/
 
-# B — Con modelo YOLOv8 custom entrenado
+# B — Con modelo YOLO11 custom entrenado
 python src/clara.py video.mp4 --calibration cal.json \
     --ball-detector yolo --ball-model clara_balon_v1.pt \
     --out results/
