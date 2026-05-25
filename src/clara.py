@@ -7,10 +7,10 @@ Cambios v0.5.1 → v0.6:
     Motion-based, ~70% recall sin entrenamiento en gyms nuevos
   - INTEGRACIÓN: rtmlib (RTMPose) para keypoints de jugadoras
     17 puntos COCO, análisis biomecánico básico
-  - Mantiene compatibilidad con clara_balon_v1.pt (YOLOv8 custom)
+  - Mantiene compatibilidad con clara_balon_v1.pt (YOLO custom)
 
 Selectores de detector de balón:
-  --ball-detector yolo       (default — usa YOLOv8 base o --ball-model)
+  --ball-detector yolo       (default — usa YOLO11 base, clase 32, o --ball-model)
   --ball-detector vballnet   (usa modelo VballNet ONNX, requiere --vballnet-model)
 
 Selectores de pose:
@@ -349,7 +349,12 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     print(f"│ Stride: {stride}")
     print(f"└──────────────────────────────────────────\n")
 
-    person_model = YOLO("yolov8n.pt")
+    # Detector de personas: yolo11m (medium). CLARA es offline, no hay
+    # presion de tiempo real, asi que no se usa el modelo nano: detecta
+    # peor a jugadoras chicas/lejanas/borrosas (footage de celular) y cada
+    # deteccion perdida es un hueco por donde se fragmenta un track.
+    # 'm' es el punto medio para CPU; en GPU se puede subir a 'yolo11x'.
+    person_model = YOLO("yolo11m.pt")
 
     pose_estimator = None
     if pose_mode == "rtmlib":
@@ -373,6 +378,14 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     tracker_cfg = Path(__file__).parent / "bytetrack_clara.yaml"
     tracker_arg = str(tracker_cfg) if tracker_cfg.exists() else "bytetrack.yaml"
 
+    # IMPORTANTE: el tracker procesa TODOS los frames del video.
+    # ByteTrack predice la posicion de cada jugadora con un filtro de
+    # Kalman y asocia por IoU asumiendo frames consecutivos. Si se le
+    # alimentan frames salteados (el viejo vid_stride=stride), una
+    # jugadora se desplaza ~stride veces mas en pixeles entre frame y
+    # frame, el IoU cae por debajo de match_thresh y ByteTrack crea un
+    # ID nuevo -> tracks fragmentados. El submuestreo para analitica se
+    # hace DESPUES, en el loop, no aqui.
     results = person_model.track(
         source=video_path,
         persist=True,
@@ -381,11 +394,16 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         conf=min(person_conf, ball_conf),
         verbose=False,
         stream=True,
-        vid_stride=stride,
     )
 
-    for r in results:
-        actual_frame = samples_processed * stride
+    for frame_idx, r in enumerate(results):
+        # ByteTrack ya proceso este frame y actualizo sus IDs internamente
+        # (basta con consumir `r` del generador). Solo recolectamos un
+        # sample para analitica cada `stride` frames: el tracking necesita
+        # continuidad total, la analitica de zonas/heatmap no.
+        if frame_idx % stride != 0:
+            continue
+        actual_frame = frame_idx
 
         if r.boxes is not None:
             cls = r.boxes.cls.int().cpu().tolist()
@@ -467,7 +485,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
 
     # ─── Detección de balón ───
     if ball_detector == "yolo" and ball_model_path and Path(ball_model_path).exists():
-        print(f"\n[•] Detectando balón con modelo custom YOLOv8...")
+        print(f"\n[•] Detectando balón con modelo custom YOLO11...")
         ball_model = YOLO(ball_model_path)
         cap = cv2.VideoCapture(video_path)
         for sample_idx in range(samples_processed):
@@ -958,7 +976,7 @@ if __name__ == "__main__":
                    help="cal.json manual (de MIRA). Opcional si se usa "
                         "--court-model.")
     p.add_argument("--court-model", default=None,
-                   help="Modelo YOLOv8-pose de cancha para auto-calibracion. "
+                   help="Modelo YOLO-pose de cancha para auto-calibracion. "
                         "Si se da, CLARA calibra sola; si falla, cae a "
                         "--calibration.")
     p.add_argument("--out", default="out")

@@ -35,3 +35,15 @@ Thumbs.db
 frames/
 frames_*/
 *.zip
+# Roboflow / training datasets (descargar aparte, no versionar)
+*_dataset*/
+volleyball_court_key_points_regression_dataset*/
+
+# External deps (clonar aparte — ver docs/integrations.md)
+fast-volleyball-tracking-inference/
+
+# Roster real de cada equipo (copiar de roster.example.json)
+roster.json
+
+# Backups
+*.bak

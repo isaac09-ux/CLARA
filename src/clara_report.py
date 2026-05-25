@@ -367,7 +367,7 @@ def generate_report(json_path, topdown_path=None, output_path=None):
     if data.get("ball_detections_oncourt", 0) == 0:
         ball_warning = '''
         <div class="warning">
-          ⚠ Cero detecciones de balón. YOLOv8n base no es confiable para
+          ⚠ Cero detecciones de balón. YOLO11 base no es confiable para
           balones de voleibol. Cuando entrenes el modelo custom en Roboflow,
           vuelve a procesar con <code>--ball-model balon.pt</code>.
         </div>

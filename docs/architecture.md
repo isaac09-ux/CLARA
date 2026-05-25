@@ -7,7 +7,7 @@ video.mp4
     │
     ▼
 ┌─────────────────────────────────────────────────┐
-│  1. YOLOv8 + ByteTrack                          │
+│  1. YOLO11 + ByteTrack                          │
 │     - Detect persons (class 0)                  │
 │     - Detect balls (class 32 or custom .pt)     │
 │     - Assign persistent track IDs               │

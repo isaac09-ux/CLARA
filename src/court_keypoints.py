@@ -1,7 +1,7 @@
 """
 court_keypoints.py — Auto-calibración de CLARA
 
-Detecta los puntos de referencia de la cancha con un modelo YOLOv8-pose
+Detecta los puntos de referencia de la cancha con un modelo YOLO11-pose
 entrenado, y calcula la homografía automáticamente. Reemplaza la
 calibración manual de MIRA cuando el modelo detecta con confianza.
 
@@ -243,7 +243,7 @@ if __name__ == "__main__":
         description="Auto-calibracion de cancha para CLARA")
     p.add_argument("video")
     p.add_argument("--model", required=True,
-                   help="Modelo YOLOv8-pose de cancha (.pt)")
+                   help="Modelo YOLO11-pose de cancha (.pt)")
     p.add_argument("--out", default="cal_auto.json")
     p.add_argument("--kp-conf", type=float, default=DEFAULT_KP_CONF,
                    help="Confianza minima por keypoint (default 0.5)")

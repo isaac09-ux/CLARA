@@ -1,6 +1,6 @@
 # Training a custom ball detector
 
-YOLOv8 base (COCO weights) does not reliably detect volleyballs — it tends to either miss them (low recall) or hallucinate on round objects like ceiling lights.
+YOLO11 base (COCO weights) does not reliably detect volleyballs — it tends to either miss them (low recall) or hallucinate on round objects like ceiling lights.
 
 For accurate ball tracking, train a custom YOLO model on your specific gym.
 

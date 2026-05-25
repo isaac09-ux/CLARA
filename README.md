@@ -18,12 +18,14 @@ CLARA processes match video into structured scouting data: player tracks, ball t
 
 ## What CLARA does
 
-- **Player tracking** via YOLOv8 + ByteTrack
+- **Player tracking** via YOLO11 + ByteTrack
 - **Ball detection** in 3 modes:
-  - YOLOv8 base (no setup, low recall)
-  - YOLOv8 custom (high recall in trained gym, requires labeling)
+  - YOLO11 base (no setup, low recall)
+  - YOLO11 custom (high recall in trained gym, requires labeling)
   - **VballNet** (motion-based, ~70% recall in any gym, **no training needed**)
 - **Pose estimation** via RTMPose (optional): 17 keypoints per player
+- **Player identification** (optional): reads jersey numbers via OCR and
+  matches them to a known roster — turns anonymous track IDs into named players
 - **Court projection** via homography from 4 corner points
 - **Zone analytics** mapped to official volleyball zones 1-6 per side
 - **Foreground filtering** discards spectators between camera and court
@@ -41,10 +43,10 @@ python src/setup_calibration.py video.mp4 --out cal.json
 
 # 3. Process video (3 modes)
 
-# A — Solo YOLOv8 base (rápido, low recall en balón)
+# A — Solo YOLO11 base (rápido, low recall en balón)
 python src/clara.py video.mp4 --calibration cal.json --out results/
 
-# B — Con modelo YOLOv8 custom entrenado
+# B — Con modelo YOLO11 custom entrenado
 python src/clara.py video.mp4 --calibration cal.json \
     --ball-detector yolo --ball-model clara_balon_v1.pt \
     --out results/
@@ -60,9 +62,36 @@ python src/clara.py video.mp4 --calibration cal.json \
     --pose rtmlib \
     --out results/
 
+# E — Con identificación de jugadora por número de jersey
+#     (copia roster.example.json -> roster.json y pon tus jugadoras primero)
+python src/clara.py video.mp4 --calibration cal.json \
+    --identify --roster roster.json \
+    --out results/
+
 # 4. Generate HTML report
 python src/clara_report.py results/scouting_data.json --topdown results/topdown.png
 ```
+
+## Player identification (`--identify`)
+
+CLARA's ByteTrack IDs are anonymous and reset every video: track #5 today is
+not track #5 tomorrow. With `--identify`, CLARA reads the jersey number of
+each track via OCR and matches it to a roster, so `scouting_data.json` carries
+a real player name per track.
+
+1. Copy `roster.example.json` to `roster.json` and fill in your players
+   (`{jersey_number: name}`).
+2. Run with `--identify --roster roster.json`.
+
+It works best alongside `--pose rtmlib` (pose keypoints crop the number region
+precisely), but falls back to a bbox-ratio crop without pose.
+
+**How it stays robust:** the number is only legible in a fraction of frames,
+so CLARA votes across the whole track instead of trusting any single frame —
+each OCR read is a confidence-weighted vote, the dominant number wins. Only
+numbers present in the roster count, so OCR misreads are discarded and rival
+players (not in the roster) stay anonymous on purpose. Output per track:
+`identity = {number, name, confidence, votes, weight}`.
 
 ## Ball detector comparison
 
@@ -109,12 +138,14 @@ CLARA evaluates its own output across 5 dimensions:
 ```
 clara/
 ├── src/
-│   ├── clara.py              — main pipeline (v0.6)
+│   ├── clara.py              — main pipeline (v0.7.0)
 │   ├── clara_report.py       — HTML report generator
 │   ├── ball_vballnet.py      — VballNet adapter
 │   ├── pose_rtmlib.py        — RTMPose wrapper + biomechanics
+│   ├── jersey_id.py          — jersey number identification
 │   ├── setup_calibration.py  — interactive calibration
 │   └── extract_frames.py     — frame extraction for training
+├── roster.example.json       — roster template for --identify
 ├── calibration/              — example calibration JSONs
 ├── docs/
 │   ├── architecture.md
@@ -131,6 +162,8 @@ clara/
 - **v0.5**: Half-court mode, foreground filter, quality score
 - **v0.5.1**: Bug fixes (score rebalancing, ball filter, efficiency)
 - **v0.6**: VballNet integration, rtmlib pose estimation
+- **v0.6.1-0.6.2**: Foreground filter fixes (horizon band, bottom edge)
+- **v0.7.0**: Player identification by jersey number (`--identify`)
 
 ## License
 
