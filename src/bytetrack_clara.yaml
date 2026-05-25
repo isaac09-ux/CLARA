@@ -7,11 +7,17 @@
 #
 # Voleibol tiene mucha oclusion (jugadoras juntas en la red, bloqueos),
 # por eso subimos el buffer respecto al default (30).
+#
+# NOTA (v0.7): track_buffer se cuenta en frames que ve el tracker. Desde
+# que CLARA dejo de saltar frames (el tracker procesa el video completo),
+# 90 frames equivalen a solo ~3 s a 30 fps — corto para una rotacion con
+# oclusion larga. Subido a 300 (~10 s) para conservar la tolerancia real
+# que daba el modo viejo (90 pasos x stride 5 = 450 frames de video).
 
 tracker_type: bytetrack
 track_high_thresh: 0.25    # umbral para detecciones de alta confianza
 track_low_thresh: 0.10     # umbral para segunda asociacion (recupera perdidos)
 new_track_thresh: 0.40     # confianza minima para crear un track nuevo
-track_buffer: 90           # frames que aguanta un track perdido (default 30)
+track_buffer: 300          # frames que aguanta un track perdido (default 30)
 match_thresh: 0.85         # umbral de IoU para asociar deteccion<->track
 fuse_score: True           # combina score de deteccion con IoU al asociar
