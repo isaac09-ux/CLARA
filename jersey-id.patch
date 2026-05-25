@@ -1,0 +1,578 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 35f498e..0b28bb9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,6 +1,34 @@
+ # Changelog
+ 
+-## v0.6.2 (current) — Filtro de borde inferior (fg_at_edge)
++## v0.7.0 (current) — Identificación de jugadora por número de jersey
++
++- NEW: módulo `src/jersey_id.py`. Convierte un track anónimo de ByteTrack en
++  una jugadora con nombre. Lee el número del jersey con OCR (easyocr) y cruza
++  contra un roster conocido. Run con `--identify --roster roster.json`.
++- Diseño: **votación por track, no por frame**. El número solo es legible en
++  una fracción de los frames; cada lectura de OCR se acumula como un voto
++  ponderado por confianza sobre el track, y el número con más peso gana. Una
++  mala lectura aislada queda enterrada por las buenas.
++- **Conjunto cerrado**: solo cuentan votos por números presentes en el roster.
++  Un OCR que lee un número inexistente se descarta — filtra casi todos los
++  errores sin entrenar nada. Consecuencia útil: las rivales (fuera del roster)
++  se quedan como tracks anónimos, que es lo deseable para scouting.
++- Reusa la pose de `--pose rtmlib` cuando está disponible: hombros (5,6) y
++  caderas (11,12) recortan la zona del número con precisión. Sin pose, cae a
++  un recorte por proporciones del bbox.
++- Preprocesamiento con CLAHE para rescatar números de bajo contraste (kit Casa
++  hueso/rosa palo).
++- Costo de OCR acotado por `--id-stride` (cada N muestras) y por un tope
++  interno de observaciones por track (`max_obs_per_track`).
++- JSON: cada `tracks[]` gana un campo `identity` con `{number, name,
++  confidence, votes, weight}`; nuevo campo raíz `identified_players`.
++- ADITIVO: con `--identify` apagado, CLARA se comporta idéntico a v0.6.2.
++- Nuevo CLI: `--identify`, `--roster <path>` (default `roster.json`),
++  `--id-stride N` (default 6). Nueva dependencia opcional: `easyocr`.
++- Limitación conocida: una rival con un número que coincide con el roster se
++  etiqueta mal. Mitigación: filtrar por `side` (A/B) en el reporte.
++
++## v0.6.2 — Filtro de borde inferior (fg_at_edge)
+ 
+ - FIX: `classify_detection` ya no rechaza toda caja cuyo borde inferior toque el frame. El check `y2 >= frame_h - 5` descartaba CUALQUIER detección pegada al borde, asumiendo que era público cortado. En video de baja resolución (p.ej. 848x478) las jugadoras llenan buena parte del alto y muchas tocan el borde en algún frame — el filtro tiró 3699 detecciones válidas en un caso real, dejando 0 tracks y score 0/100. Ahora `fg_at_edge` solo rechaza si la caja toca el borde **y además** es grande (>35% del alto), patrón de un espectador/entrenador en primer plano. Jugadoras lejanas cuyos pies se cortan un poco se conservan; si quedaran fuera de cancha, `is_in_court()` las filtra tras la proyección. Los balones tocando el borde ya no se descartan (antes: `ball_fg_at_edge`).
+ - Nuevo parámetro `edge_reject_height_ratio` en `classify_detection` (default 0.35).
+diff --git a/README.md b/README.md
+index ac5b6bc..4882465 100644
+--- a/README.md
++++ b/README.md
+@@ -24,6 +24,8 @@ CLARA processes match video into structured scouting data: player tracks, ball t
+   - YOLOv8 custom (high recall in trained gym, requires labeling)
+   - **VballNet** (motion-based, ~70% recall in any gym, **no training needed**)
+ - **Pose estimation** via RTMPose (optional): 17 keypoints per player
++- **Player identification** (optional): reads jersey numbers via OCR and
++  matches them to a known roster — turns anonymous track IDs into named players
+ - **Court projection** via homography from 4 corner points
+ - **Zone analytics** mapped to official volleyball zones 1-6 per side
+ - **Foreground filtering** discards spectators between camera and court
+@@ -60,10 +62,37 @@ python src/clara.py video.mp4 --calibration cal.json \
+     --pose rtmlib \
+     --out results/
+ 
++# E — Con identificación de jugadora por número de jersey
++#     (copia roster.example.json -> roster.json y pon tus jugadoras primero)
++python src/clara.py video.mp4 --calibration cal.json \
++    --identify --roster roster.json \
++    --out results/
++
+ # 4. Generate HTML report
+ python src/clara_report.py results/scouting_data.json --topdown results/topdown.png
+ ```
+ 
++## Player identification (`--identify`)
++
++CLARA's ByteTrack IDs are anonymous and reset every video: track #5 today is
++not track #5 tomorrow. With `--identify`, CLARA reads the jersey number of
++each track via OCR and matches it to a roster, so `scouting_data.json` carries
++a real player name per track.
++
++1. Copy `roster.example.json` to `roster.json` and fill in your players
++   (`{jersey_number: name}`).
++2. Run with `--identify --roster roster.json`.
++
++It works best alongside `--pose rtmlib` (pose keypoints crop the number region
++precisely), but falls back to a bbox-ratio crop without pose.
++
++**How it stays robust:** the number is only legible in a fraction of frames,
++so CLARA votes across the whole track instead of trusting any single frame —
++each OCR read is a confidence-weighted vote, the dominant number wins. Only
++numbers present in the roster count, so OCR misreads are discarded and rival
++players (not in the roster) stay anonymous on purpose. Output per track:
++`identity = {number, name, confidence, votes, weight}`.
++
+ ## Ball detector comparison
+ 
+ | Detector | Setup | Recall (own gym) | Recall (new gym) | Training |
+@@ -109,12 +138,14 @@ CLARA evaluates its own output across 5 dimensions:
+ ```
+ clara/
+ ├── src/
+-│   ├── clara.py              — main pipeline (v0.6)
++│   ├── clara.py              — main pipeline (v0.7.0)
+ │   ├── clara_report.py       — HTML report generator
+ │   ├── ball_vballnet.py      — VballNet adapter
+ │   ├── pose_rtmlib.py        — RTMPose wrapper + biomechanics
++│   ├── jersey_id.py          — jersey number identification
+ │   ├── setup_calibration.py  — interactive calibration
+ │   └── extract_frames.py     — frame extraction for training
++├── roster.example.json       — roster template for --identify
+ ├── calibration/              — example calibration JSONs
+ ├── docs/
+ │   ├── architecture.md
+@@ -131,6 +162,8 @@ clara/
+ - **v0.5**: Half-court mode, foreground filter, quality score
+ - **v0.5.1**: Bug fixes (score rebalancing, ball filter, efficiency)
+ - **v0.6**: VballNet integration, rtmlib pose estimation
++- **v0.6.1-0.6.2**: Foreground filter fixes (horizon band, bottom edge)
++- **v0.7.0**: Player identification by jersey number (`--identify`)
+ 
+ ## License
+ 
+diff --git a/requirements.txt b/requirements.txt
+index c766ad8..5275059 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -7,3 +7,7 @@ onnxruntime>=1.16.0
+ 
+ # Optional: pose estimation
+ rtmlib>=0.0.13
++
++# Optional: jersey number identification (--identify)
++# easyocr usa torch, que ultralytics ya instala — no añade peso pesado nuevo.
++easyocr>=1.7.0
+diff --git a/roster.example.json b/roster.example.json
+new file mode 100644
+index 0000000..c085496
+--- /dev/null
++++ b/roster.example.json
+@@ -0,0 +1,14 @@
++{
++  "_comment": "Copia este archivo a roster.json (en la raíz del repo) y pon tus jugadoras reales. La llave es el numero de jersey, el valor es el nombre. Solo estos numeros se reconocen — un OCR que lea un numero fuera de esta lista se descarta. Las jugadoras rival NO van aqui: se quedan como tracks anonimos a proposito.",
++  "team": "Las Chispas — Lisboa",
++  "players": {
++    "1": "Jugadora 1",
++    "3": "Jugadora 3",
++    "5": "Jugadora 5",
++    "7": "Jugadora 7",
++    "9": "Jugadora 9",
++    "10": "Jugadora 10",
++    "11": "Jugadora 11",
++    "12": "Jugadora 12"
++  }
++}
+diff --git a/src/clara.py b/src/clara.py
+index 9dcc19a..a5118b8 100644
+--- a/src/clara.py
++++ b/src/clara.py
+@@ -1,13 +1,12 @@
+ """
+-CLARA v0.6.2 — Multimodal scouting
++CLARA v0.7.0 — Multimodal scouting
+ Tentáculo de visión por computadora de LUCIA · Las Chispas.
+ 
+-Cambios v0.5.1 → v0.6:
+-  - INTEGRACIÓN: VballNet (TrackNetV4) como detector de balón opcional
+-    Motion-based, ~70% recall sin entrenamiento en gyms nuevos
+-  - INTEGRACIÓN: rtmlib (RTMPose) para keypoints de jugadoras
+-    17 puntos COCO, análisis biomecánico básico
+-  - Mantiene compatibilidad con clara_balon_v1.pt (YOLOv8 custom)
++Cambios v0.6.2 → v0.7.0:
++  - INTEGRACIÓN: jersey_id — identificación de jugadora por número de jersey.
++    Convierte un track anónimo de ByteTrack en una jugadora con nombre,
++    leyendo el número con OCR y votando por track contra un roster conocido.
++    Aditivo: con --identify apagado, CLARA se comporta idéntico a v0.6.2.
+ 
+ Selectores de detector de balón:
+   --ball-detector yolo       (default — usa YOLOv8 base o --ball-model)
+@@ -16,6 +15,10 @@ Selectores de detector de balón:
+ Selectores de pose:
+   --pose none      (default — solo bounding boxes)
+   --pose rtmlib    (extrae keypoints por jugadora detectada)
++
++Identificación:
++  --identify               (lee número de jersey y lo cruza con --roster)
++  --roster roster.json     (roster {numero: nombre} de tu equipo)
+ """
+ import cv2
+ import numpy as np
+@@ -208,6 +211,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+         ball_detector="yolo", ball_model_path=None, vballnet_model=None,
+         vballnet_stride=1,
+         pose_mode="none",
++        identify=False, roster_path="roster.json", id_stride=6,
+         save_diagnostic=True):
+ 
+     out = Path(output_dir)
+@@ -231,12 +235,13 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+     Hf = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+     cap.release()
+ 
+-    print(f"\n┌─ CLARA v0.6.2 ─────────────────────────────")
++    print(f"\n┌─ CLARA v0.7.0 ─────────────────────────────")
+     print(f"│ Video: {Path(video_path).name}")
+     print(f"│ {W}x{Hf} @ {fps:.1f}fps | {total_frames/fps/60:.2f} min")
+     print(f"│ Cancha: {court_w}x{court_h}m {'[HALF]' if half_court else '[FULL]'}")
+     print(f"│ Balón: {ball_detector}")
+     print(f"│ Pose:  {pose_mode}")
++    print(f"│ ID:    {'jersey' if identify else 'off'}")
+     print(f"│ Stride: {stride}")
+     print(f"└──────────────────────────────────────────\n")
+ 
+@@ -251,6 +256,17 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+             print("⚠ rtmlib no disponible. pip install rtmlib")
+             pose_mode = "none"
+ 
++    identifier = None
++    if identify:
++        try:
++            from jersey_id import JerseyIdentifier
++            identifier = JerseyIdentifier(roster_path)
++            print(f"[•] Identificación activada · "
++                  f"{len(identifier.roster)} jugadoras en roster")
++        except (ImportError, FileNotFoundError, ValueError) as e:
++            print(f"⚠ Identificación deshabilitada: {e}")
++            identify = False
++
+     raw_tracks = defaultdict(list)
+     rejected_counts = defaultdict(int)
+     ball_detections = []
+@@ -305,7 +321,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+                         "bbox": [float(x1), float(y1), float(x2), float(y2)],
+                     }
+                     raw_tracks[tid].append(sample)
+-                    if pose_estimator:
++                    if pose_estimator or identifier:
+                         valid_persons.append((tid, sample,
+                                               [float(x1), float(y1),
+                                                float(x2), float(y2)]))
+@@ -345,6 +361,18 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+                         if samples_processed % 50 == 0:
+                             print(f"⚠ Pose error frame {actual_frame}: {e}")
+ 
++            # ─── Identificación: leer número de jersey ───
++            # Reusa r.orig_img (frame ya decodificado por ultralytics) y la
++            # pose ya adjunta al sample si --pose está activo. Espaciado por
++            # id_stride: el OCR es caro y un track no necesita leerse en
++            # cada muestra — la votación se acumula sobre pocas lecturas.
++            if identifier and valid_persons and samples_processed % id_stride == 0:
++                frame_img = getattr(r, "orig_img", None)
++                if frame_img is not None:
++                    for tid, sample, bbox in valid_persons:
++                        identifier.observe(tid, frame_img, bbox,
++                                           pose=sample.get("pose"))
++
+         samples_processed += 1
+         if samples_processed % 200 == 0:
+             pct = actual_frame / total_frames * 100
+@@ -496,7 +524,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+             pass
+ 
+     metrics = {
+-        "clara_version": "0.6.2",
++        "clara_version": "0.7.0",
+         "video": Path(video_path).name,
+         "duration_s": round(total_frames / fps, 1),
+         "duration_min": round(total_frames / fps / 60, 2),
+@@ -506,6 +534,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+         "half_court": half_court,
+         "ball_detector": ball_detector,
+         "pose_mode": pose_mode,
++        "identify": identify,
+         "raw_tracks": len(raw_tracks),
+         "filtered_tracks": len(filtered),
+         "rejected_detections": dict(rejected_counts),
+@@ -546,6 +575,16 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+         })
+     metrics["tracks"].sort(key=lambda t: -t["samples"])
+ 
++    # ─── Identidades: cerrar votación y adjuntar a cada track ───
++    if identifier:
++        identities = identifier.resolve()
++        for t in metrics["tracks"]:
++            t["identity"] = identities.get(t["id"])
++        metrics["identified_players"] = sum(
++            1 for t in metrics["tracks"]
++            if t.get("identity") and t["identity"]["number"] is not None
++        )
++
+     # ─── Topdowns ───
+     save_topdown(filtered, ball_clean, court_w, court_h, ppm,
+                  out / "topdown.png", title="Total",
+@@ -588,6 +627,9 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
+         print(f"│ Pose: {len(pose_stats)} tracks con keypoints")
+     else:
+         print(f"│ Pose: deshabilitado")
++    if identifier:
++        named = metrics.get("identified_players", 0)
++        print(f"│ ID: {named}/{len(filtered)} tracks identificados por número")
+     print(f"│ Rechazos: {sum(rejected_counts.values())}")
+     print(f"│")
+     print(f"│ ★ CALIDAD: {score}/100 — {quality_label}")
+@@ -825,7 +867,7 @@ def save_pose_sample(video_path, filtered_tracks, path):
+ 
+ 
+ if __name__ == "__main__":
+-    p = argparse.ArgumentParser(description="CLARA v0.6.2 — multimodal scouting")
++    p = argparse.ArgumentParser(description="CLARA v0.7.0 — multimodal scouting")
+     p.add_argument("video")
+     p.add_argument("--calibration", required=True)
+     p.add_argument("--out", default="out")
+@@ -840,6 +882,15 @@ if __name__ == "__main__":
+                         "Subir a 2-3 reduce RAM e inferencias en clips largos a "
+                         "costa de recall.")
+     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
++    p.add_argument("--identify", action="store_true",
++                   help="Lee el número de jersey de cada track y lo cruza "
++                        "con el roster para nombrar a las jugadoras.")
++    p.add_argument("--roster", default="roster.json",
++                   help="JSON {numero: nombre} de tu equipo (ver "
++                        "roster.example.json).")
++    p.add_argument("--id-stride", type=int, default=6,
++                   help="Corre OCR de número cada N muestras procesadas. "
++                        "Más alto = más rápido, menos lecturas por track.")
+     a = p.parse_args()
+     run(a.video, a.calibration, a.out, a.stride,
+         a.person_conf, a.ball_conf,
+@@ -847,4 +898,7 @@ if __name__ == "__main__":
+         ball_model_path=a.ball_model,
+         vballnet_model=a.vballnet_model,
+         vballnet_stride=a.vballnet_stride,
+-        pose_mode=a.pose)
++        pose_mode=a.pose,
++        identify=a.identify,
++        roster_path=a.roster,
++        id_stride=a.id_stride)
+diff --git a/src/jersey_id.py b/src/jersey_id.py
+new file mode 100644
+index 0000000..3d61cbe
+--- /dev/null
++++ b/src/jersey_id.py
+@@ -0,0 +1,242 @@
++"""
++jersey_id.py — Identificación de jugadora por número de jersey.
++
++CLARA ya asigna IDs de track persistentes (ByteTrack), pero esos IDs son
++anónimos y se reinician en cada video: el track #5 de hoy no es el track #5
++de mañana. Este módulo convierte un track anónimo en una jugadora con nombre
++leyendo el número del jersey y cruzándolo contra un roster conocido.
++
++POR QUÉ NÚMERO Y NO CARA
++------------------------
++Reconocimiento facial no sirve en voleibol amateur: blur de movimiento,
++jugadoras de espaldas la mitad del tiempo, caras de pocos píxeles en video de
++baja resolución. El número de jersey es texto grande y de alto contraste
++diseñado precisamente para leerse a distancia. Lo tratamos como un problema
++de scene text recognition (igual que la literatura de SoccerNet jersey number).
++
++EL TRUCO: VOTACIÓN POR TRACK, NO POR FRAME
++------------------------------------------
++El número solo es legible en una fracción de los frames (espalda de frente,
++sin oclusión, sin blur). Un solo frame es poco confiable. Pero ByteTrack ya
++mantiene el ID del track durante toda la jugada — así que acumulamos cada
++lectura de OCR como un VOTO ponderado por confianza sobre ese track, y al
++final el número con más peso gana. Una mala lectura aislada queda enterrada
++por las buenas.
++
++CONJUNTO CERRADO
++----------------
++Solo cuentan votos por números que están en el roster. Si el OCR lee "33" y
++nadie en Las Chispas usa el 33, el voto se descarta. Esto filtra casi todos
++los errores de OCR sin entrenar nada. Consecuencia útil: las jugadoras rival
++(que no están en el roster) se quedan como tracks anónimos — exactamente lo
++que quieres para scouting (identificas a las tuyas, las rivales se analizan
++por zona).
++
++LIMITACIONES CONOCIDAS (v0.7.0)
++-------------------------------
++- Si una rival usa un número que coincide con uno del roster, se etiqueta
++  mal. Mitigación: el track trae `side` (A/B) — filtra por lado en el reporte.
++- Kit Casa (hueso con números rosa palo): contraste bajo para OCR. El
++  preprocesamiento aplica CLAHE para rescatarlo, pero el kit Visitante
++  (oxblood) y el Third (negro/oro) leen mejor. En partido de local, espera
++  más lecturas fallidas — la votación por track lo compensa parcialmente.
++- OCR es costoso. El llamador debe espaciar las observaciones (id_stride) y
++  este módulo además topa las observaciones por track (max_obs_per_track).
++
++Dependencia: easyocr (Apache 2.0). No añade peso pesado nuevo — easyocr usa
++torch, que CLARA ya instala para YOLO.
++"""
++import json
++from pathlib import Path
++from collections import defaultdict
++
++import cv2
++import numpy as np
++
++# Índices de keypoints COCO usados para recortar la zona del número.
++L_SHOULDER, R_SHOULDER = 5, 6
++L_HIP, R_HIP = 11, 12
++
++
++def load_roster(path):
++    """Lee roster.json -> dict {int numero: str nombre}.
++
++    Formato esperado:
++        {"team": "...", "players": {"5": "Jess", "7": "...", ...}}
++    """
++    p = Path(path)
++    if not p.exists():
++        raise FileNotFoundError(
++            f"No encontré el roster: {path}. Copia roster.example.json "
++            f"a roster.json y pon tus jugadoras."
++        )
++    data = json.loads(p.read_text())
++    players = data.get("players", {})
++    roster = {}
++    for num, name in players.items():
++        try:
++            roster[int(num)] = str(name)
++        except (ValueError, TypeError):
++            continue
++    if not roster:
++        raise ValueError(f"El roster {path} no tiene jugadoras válidas.")
++    return roster
++
++
++def torso_crop(frame, bbox, pose=None, pad=0.18):
++    """Recorta la región del número del jersey.
++
++    Con pose disponible usa hombros (5,6) y caderas (11,12): el número va
++    en ese rectángulo (pecho al frente, espalda alta atrás). Sin pose, cae
++    a proporciones del bbox — el número se ubica en el torso medio-alto.
++
++    Devuelve el recorte BGR, o None si la geometría es inválida.
++    """
++    H, W = frame.shape[:2]
++    x1, y1, x2, y2 = bbox
++    bw, bh = x2 - x1, y2 - y1
++    if bw < 4 or bh < 4:
++        return None
++
++    cx1 = cy1 = cx2 = cy2 = None
++    if pose is not None:
++        kp = pose.get("kp")
++        sc = pose.get("sc")
++        if kp is not None and sc is not None and len(kp) > R_HIP:
++            idx = [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]
++            if all(sc[i] >= 0.3 for i in idx):
++                xs = [kp[i][0] for i in idx]
++                ys = [kp[i][1] for i in idx]
++                cx1, cx2 = min(xs), max(xs)
++                cy1, cy2 = min(ys), max(ys)
++
++    if cx1 is None:  # fallback por proporciones del bbox
++        cx1 = x1 + 0.12 * bw
++        cx2 = x2 - 0.12 * bw
++        cy1 = y1 + 0.18 * bh
++        cy2 = y1 + 0.55 * bh
++
++    # padding y recorte seguro a los límites del frame
++    px, py = pad * (cx2 - cx1), pad * (cy2 - cy1)
++    ix1 = max(0, int(cx1 - px));  iy1 = max(0, int(cy1 - py))
++    ix2 = min(W, int(cx2 + px));  iy2 = min(H, int(cy2 + py))
++    if ix2 - ix1 < 6 or iy2 - iy1 < 6:
++        return None
++    return frame[iy1:iy2, ix1:ix2]
++
++
++def preprocess_for_ocr(crop, min_side=96):
++    """Gris + CLAHE + upscale. CLAHE rescata números de bajo contraste
++    (kit Casa hueso/rosa); el upscale ayuda a easyocr con recortes chicos."""
++    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
++    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
++    gray = clahe.apply(gray)
++    h, w = gray.shape
++    short = min(h, w)
++    if short < min_side:
++        scale = min_side / short
++        gray = cv2.resize(gray, (int(w * scale), int(h * scale)),
++                          interpolation=cv2.INTER_CUBIC)
++    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
++
++
++class JerseyIdentifier:
++    """Lee números de jersey y resuelve identidades por votación por track.
++
++    Uso:
++        ident = JerseyIdentifier("roster.json")
++        # en el loop, cada id_stride muestras:
++        ident.observe(track_id, frame_img, bbox, pose=sample.get("pose"))
++        # al final:
++        identities = ident.resolve()   # {track_id: {...}}
++    """
++
++    def __init__(self, roster_path, min_crop_px=40,
++                 vote_threshold=1.5, min_dominance=0.5,
++                 max_obs_per_track=30, ocr_conf_min=0.3):
++        """
++        min_crop_px       lado mínimo del recorte; más chico = OCR basura, se salta
++        vote_threshold    peso acumulado mínimo (suma de confianzas) para nombrar
++        min_dominance     fracción del peso total que debe llevarse el ganador
++        max_obs_per_track tope de observaciones por track (acota costo de OCR)
++        ocr_conf_min      confianza mínima de easyocr para contar una lectura
++        """
++        self.roster = load_roster(roster_path)
++        self.valid_numbers = set(self.roster)
++        self.min_crop_px = min_crop_px
++        self.vote_threshold = vote_threshold
++        self.min_dominance = min_dominance
++        self.max_obs_per_track = max_obs_per_track
++        self.ocr_conf_min = ocr_conf_min
++
++        # votos[tid] = {numero: peso_acumulado};  obs[tid] = lecturas intentadas
++        self._votes = defaultdict(lambda: defaultdict(float))
++        self._obs = defaultdict(int)
++
++        # Import perezoso: easyocr es pesado de cargar y descarga modelos la
++        # primera vez. Así clara.py puede capturar el ImportError con gracia.
++        try:
++            import easyocr
++        except ImportError as e:
++            raise ImportError(
++                "easyocr no instalado. Instala con: pip install easyocr"
++            ) from e
++        print("[jersey_id] Cargando easyocr (descarga modelos la 1a vez)...")
++        self._reader = easyocr.Reader(["en"], gpu=False, verbose=False)
++
++    def observe(self, tid, frame, bbox, pose=None):
++        """Intenta leer el número de un track en un frame. Acumula votos.
++
++        Es barato salir temprano: si el track ya tiene suficientes
++        observaciones, no corremos OCR otra vez.
++        """
++        if self._obs[tid] >= self.max_obs_per_track:
++            return
++        crop = torso_crop(frame, bbox, pose=pose)
++        if crop is None or min(crop.shape[:2]) < self.min_crop_px:
++            return
++        self._obs[tid] += 1
++
++        proc = preprocess_for_ocr(crop)
++        try:
++            results = self._reader.readtext(
++                proc, allowlist="0123456789", detail=1, paragraph=False)
++        except Exception:
++            return
++
++        for _, text, conf in results:
++            text = text.strip()
++            if not text.isdigit() or not (1 <= len(text) <= 2):
++                continue
++            num = int(text)
++            if conf < self.ocr_conf_min or num not in self.valid_numbers:
++                continue
++            self._votes[tid][num] += float(conf)
++
++    def resolve(self):
++        """Cierra la votación. Devuelve {tid: identidad}.
++
++        identidad = {number, name, confidence, votes, weight}
++        number es None cuando no hay evidencia suficiente -> 'desconocida'.
++        """
++        out = {}
++        for tid, obs in self._obs.items():
++            votes = self._votes.get(tid, {})
++            total = sum(votes.values())
++            if not votes or total <= 0:
++                out[tid] = {"number": None, "name": "desconocida",
++                            "confidence": 0.0, "votes": obs, "weight": 0.0}
++                continue
++            best_num = max(votes, key=votes.get)
++            best_w = votes[best_num]
++            dominance = best_w / total
++            named = (best_w >= self.vote_threshold and
++                     dominance >= self.min_dominance)
++            out[tid] = {
++                "number": best_num if named else None,
++                "name": self.roster[best_num] if named else "desconocida",
++                "confidence": round(dominance, 2),
++                "votes": obs,
++                "weight": round(best_w, 2),
++            }
++        return out
