@@ -21,9 +21,16 @@ import cv2
 import numpy as np
 import json
 import argparse
+import sys
 from pathlib import Path
 from collections import defaultdict
 from ultralytics import YOLO
+
+# En consolas Windows (cp1252) los caracteres de caja (┌─│), ✓, ⏳, ★ del banner
+# revientan stdout con UnicodeEncodeError. Forzar utf-8 hace que CLARA corra
+# igual en una PowerShell normal, no solo redirigida a archivo.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 # ============================================================

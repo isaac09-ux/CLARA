@@ -8,7 +8,13 @@ Uso:
 import json
 import argparse
 import base64
+import sys
 from pathlib import Path
+
+# Consolas Windows (cp1252) revientan al imprimir ✓ con UnicodeEncodeError
+# aunque el HTML ya se haya escrito. Forzar utf-8 evita el falso "fallo".
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
