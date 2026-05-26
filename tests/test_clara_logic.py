@@ -101,6 +101,48 @@ class TestGeometry(unittest.TestCase):
         self.assertTrue(clara.is_in_court(9.3, 4.5, 9, 9))
 
 
+class TestRallies(unittest.TestCase):
+    @staticmethod
+    def _run(start, end, step=5, x=2.0, y=5.0):
+        return [{"frame": f, "court_x": x, "court_y": y}
+                for f in range(start, end + 1, step)]
+
+    def test_separa_rallies_por_hueco_grande(self):
+        # rally A (0-150f) + hueco de 200f + rally B (350-450f) -> 2 rallies
+        pts = self._run(0, 150) + self._run(350, 450)
+        rallies, summ = clara.segment_rallies(pts, fps=30, court_h=18)
+        self.assertEqual(summ["n_rallies"], 2)
+        self.assertEqual(summ["n_serves"], 2)
+
+    def test_huecos_chicos_no_cortan_el_rally(self):
+        # un solo rally continuo (gaps de 5f << 60f) -> 1 rally
+        pts = self._run(0, 300)
+        rallies, summ = clara.segment_rallies(pts, fps=30, court_h=18)
+        self.assertEqual(summ["n_rallies"], 1)
+        self.assertAlmostEqual(rallies[0]["duration_s"], 10.0, places=1)
+
+    def test_grupos_espurios_se_descartan(self):
+        # 2 puntos aislados (< min_points) no son un rally
+        pts = self._run(0, 150) + [{"frame": 800, "court_x": 1, "court_y": 1},
+                                   {"frame": 803, "court_x": 1, "court_y": 1}]
+        rallies, summ = clara.segment_rallies(pts, fps=30, court_h=18)
+        self.assertEqual(summ["n_rallies"], 1)
+
+    def test_lado_de_saque_por_posicion(self):
+        # cancha completa: inicio en y<9 -> lado A, y>9 -> lado B
+        a = self._run(0, 150, y=2.0)
+        b = self._run(350, 500, y=15.0)
+        rallies, summ = clara.segment_rallies(a + b, fps=30, court_h=18,
+                                              half_court=False)
+        sides = {r["serve_side"] for r in rallies}
+        self.assertEqual(sides, {"A", "B"})
+
+    def test_sin_balon_no_truena(self):
+        rallies, summ = clara.segment_rallies([], fps=30)
+        self.assertEqual(summ["n_rallies"], 0)
+        self.assertEqual(rallies, [])
+
+
 class TestReport(unittest.TestCase):
     def test_quality_verdict_umbrales(self):
         self.assertEqual(clara_report.quality_verdict(85)[0], "excelente")

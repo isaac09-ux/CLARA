@@ -291,6 +291,69 @@ def stitch_tracks(raw_tracks, fps, stride, max_gap_s=1.5, max_jump_m=2.5):
 
 
 # ============================================================
+#  SEGMENTACION DE RALLIES (heuristica sobre el balon)
+# ============================================================
+def segment_rallies(ball_pts, fps, max_gap_s=2.0, min_rally_s=1.0,
+                    min_points=3, court_h=18.0, half_court=False):
+    """Agrupa las detecciones de balon en rallies (periodos de juego continuo).
+
+    Idea: entre rallies el balon esta quieto/sostenido y VballNet (motion-based)
+    no lo detecta -> hueco temporal grande. Dentro del rally el balon se mueve y
+    se detecta casi continuo (huecos chicos por misses). Un hueco > max_gap_s
+    corta el rally. Sin entrenamiento, solo geometria + tiempo.
+
+    ball_pts: lista de {'frame','court_x','court_y'} (cualquier orden).
+    Devuelve (rallies, summary). Cada rally trae start/end frame, duracion,
+    n_points, posicion de inicio y el lado que saca (aprox, por la y de inicio).
+    """
+    if not ball_pts:
+        return [], {"n_rallies": 0, "n_serves": 0, "avg_rally_s": 0,
+                    "longest_rally_s": 0, "total_play_s": 0, "serves_by_side": {}}
+
+    pts = sorted(ball_pts, key=lambda b: b["frame"])
+    max_gap_f = max_gap_s * fps
+    groups = [[pts[0]]]
+    for p in pts[1:]:
+        if p["frame"] - groups[-1][-1]["frame"] <= max_gap_f:
+            groups[-1].append(p)
+        else:
+            groups.append([p])
+
+    rallies = []
+    for g in groups:
+        dur = (g[-1]["frame"] - g[0]["frame"]) / fps
+        if len(g) < min_points or dur < min_rally_s:
+            continue
+        sx, sy = g[0]["court_x"], g[0]["court_y"]
+        # El saque nace detras de una linea de fondo. En cancha completa la y de
+        # inicio dice quien saco; en media cancha solo vemos un lado.
+        side = ("A" if half_court else
+                "A" if sy <= court_h / 2 else "B")
+        rallies.append({
+            "start_frame": g[0]["frame"],
+            "end_frame": g[-1]["frame"],
+            "duration_s": round(dur, 1),
+            "n_points": len(g),
+            "serve_side": side,
+            "serve_pos_m": [round(sx, 2), round(sy, 2)],
+        })
+
+    durs = [r["duration_s"] for r in rallies]
+    by_side = {}
+    for r in rallies:
+        by_side[r["serve_side"]] = by_side.get(r["serve_side"], 0) + 1
+    summary = {
+        "n_rallies": len(rallies),
+        "n_serves": len(rallies),          # ~1 saque por rally
+        "avg_rally_s": round(sum(durs) / len(durs), 1) if durs else 0,
+        "longest_rally_s": max(durs) if durs else 0,
+        "total_play_s": round(sum(durs), 1),
+        "serves_by_side": by_side,
+    }
+    return rallies, summary
+
+
+# ============================================================
 #  PIPELINE PRINCIPAL
 # ============================================================
 def run(video_path, calibration_path, output_dir="out", stride=5,
@@ -604,6 +667,10 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     # emite varias cajas en el mismo frame.
     ball_frames_oncourt = len({b["frame"] for b in ball_clean})
 
+    # ─── Segmentación de rallies / saques (heurística sobre el balón) ───
+    rallies, play_summary = segment_rallies(
+        ball_clean, fps, court_h=court_h, half_court=half_court)
+
     # ─── Score de calidad ───
     expected_tracks = 6 if half_court else 12
     score, score_breakdown = compute_quality_score(
@@ -675,6 +742,11 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "ball_detection_rate": round(ball_frames_oncourt / max(samples_processed, 1), 3),
         "quality_score": score,
         "quality_breakdown": score_breakdown,
+        "play_summary": play_summary,
+        "rallies": rallies,
+        "ball_trajectory": [[b["frame"], round(b["court_x"], 2),
+                             round(b["court_y"], 2)]
+                            for b in sorted(ball_clean, key=lambda b: b["frame"])],
         "zone_visits_total": dict(zone_visits),
         "zone_visits_first_half": dict(zone_first),
         "zone_visits_second_half": dict(zone_second),
@@ -761,6 +833,11 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         print(f"│ Tracks cosidos: {n_stitched} fragmentos unidos")
     print(f"│ Balones: {len(ball_clean)} ({metrics['ball_detection_rate']*100:.1f}%) "
           f"[{ball_detector}]")
+    if play_summary["n_rallies"] > 0:
+        print(f"│ Rallies: {play_summary['n_rallies']} "
+              f"(~{play_summary['n_serves']} saques) · "
+              f"promedio {play_summary['avg_rally_s']}s · "
+              f"más largo {play_summary['longest_rally_s']}s")
     if pose_estimator:
         print(f"│ Pose: {len(pose_stats)} tracks con keypoints")
     else:

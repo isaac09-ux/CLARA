@@ -247,6 +247,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 {ball_warning}
 
+<h2>Ritmo de juego</h2>
+{play_html}
+
 <h2>Vista Cenital</h2>
 <div class="topdown-wrap">
   {topdown_html}
@@ -425,6 +428,39 @@ def generate_report(json_path, topdown_path=None, output_path=None):
           </tr>
         ''')
 
+    # Ritmo de juego: rallies / saques (Sprint 2, heuristica sobre el balon)
+    ps = data.get("play_summary") or {}
+    if ps.get("n_rallies", 0) > 0:
+        sides = ps.get("serves_by_side", {})
+        sides_txt = (" · ".join(f"lado {k}: {v}" for k, v in sorted(sides.items()))
+                     if len(sides) > 1 else "≈ uno por rally")
+        play_html = f'''<div class="grid">
+      <div class="card"><div class="label">Rallies</div>
+        <div class="value">{ps['n_rallies']}</div>
+        <div class="sub">periodos de juego continuo</div></div>
+      <div class="card"><div class="label">Saques</div>
+        <div class="value">~{ps['n_serves']}</div>
+        <div class="sub">{sides_txt}</div></div>
+      <div class="card"><div class="label">Rally promedio</div>
+        <div class="value">{ps['avg_rally_s']}s</div>
+        <div class="sub">más largo: {ps['longest_rally_s']}s</div></div>
+      <div class="card"><div class="label">Tiempo de juego</div>
+        <div class="value">{ps['total_play_s']}s</div>
+        <div class="sub">balón en movimiento</div></div>
+    </div>'''
+        # Los rallies salen del balon: con deteccion baja se subestiman duraciones
+        # y se pierden rallies. Avisar para que el coach no lea de mas.
+        if data.get("ball_detection_rate", 0) < 0.30:
+            play_html += ('<div class="warning">⚠ Detección de balón baja '
+                          f'({data.get("ball_detection_rate", 0)*100:.0f}%): los rallies '
+                          'y duraciones son un <b>piso aproximado</b> (se cuentan del '
+                          'primer al último balón visto). Con mejor detección de balón '
+                          'estos números suben en fiabilidad.</div>')
+    else:
+        play_html = ('<div class="warning">Sin rallies detectados. Requiere '
+                     'detección de balón — corre con <code>--ball-detector '
+                     'vballnet</code>.</div>')
+
     # Calidad: veredicto en lenguaje de coach
     score = data.get("quality_score", 0)
     quality_tier, quality_label, quality_interp = quality_verdict(score)
@@ -473,6 +509,7 @@ def generate_report(json_path, topdown_path=None, output_path=None):
         quality_label=quality_label,
         quality_interp=quality_interp,
         quality_caveat=quality_caveat,
+        play_html=play_html,
         video_name=data.get("video", "—"),
         duration_min=data.get("duration_min", 0),
         stride=data.get("stride", 1),
