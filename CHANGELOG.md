@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 (2026-05-25) — Detector YOLO11 + métricas honestas para el coach
 
 ### Datos para el coach + validacion multi-gimnasio
 

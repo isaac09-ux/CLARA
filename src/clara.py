@@ -1,5 +1,5 @@
 """
-CLARA v0.7 — Multimodal scouting + auto-calibracion
+CLARA v0.8 — Multimodal scouting + auto-calibracion
 Tentáculo de visión por computadora de LUCIA · Las Chispas.
 
 Cambios v0.5.1 → v0.6:
@@ -340,7 +340,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     Hf = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
 
-    print(f"\n┌─ CLARA v0.7 ─────────────────────────────")
+    print(f"\n┌─ CLARA v0.8 ─────────────────────────────")
     print(f"│ Video: {Path(video_path).name}")
     print(f"│ {W}x{Hf} @ {fps:.1f}fps | {total_frames/fps/60:.2f} min")
     print(f"│ Cancha: {court_w}x{court_h}m {'[HALF]' if half_court else '[FULL]'}")
@@ -648,7 +648,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             pass
 
     metrics = {
-        "clara_version": "0.7",
+        "clara_version": "0.8",
         "video": Path(video_path).name,
         "duration_s": round(total_frames / fps, 1),
         "duration_min": round(total_frames / fps / 60, 2),
@@ -1015,7 +1015,7 @@ def save_pose_sample(video_path, filtered_tracks, path):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="CLARA v0.7 — multimodal scouting")
+    p = argparse.ArgumentParser(description="CLARA v0.8 — multimodal scouting")
     p.add_argument("video")
     p.add_argument("--calibration", default=None,
                    help="cal.json manual (de MIRA). Opcional si se usa "

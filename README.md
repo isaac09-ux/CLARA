@@ -138,7 +138,7 @@ CLARA evaluates its own output across 5 dimensions:
 ```
 clara/
 ├── src/
-│   ├── clara.py              — main pipeline (v0.7.0)
+│   ├── clara.py              — main pipeline (v0.8.0)
 │   ├── clara_report.py       — HTML report generator
 │   ├── ball_vballnet.py      — VballNet adapter
 │   ├── pose_rtmlib.py        — RTMPose wrapper + biomechanics
@@ -164,6 +164,7 @@ clara/
 - **v0.6**: VballNet integration, rtmlib pose estimation
 - **v0.6.1-0.6.2**: Foreground filter fixes (horizon band, bottom edge)
 - **v0.7.0**: Player identification by jersey number (`--identify`)
+- **v0.8.0**: YOLO11m detector, honest quality metrics, coach-ready per-player scouting data, multi-gym validation
 
 ## License
 
