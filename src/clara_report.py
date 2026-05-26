@@ -183,6 +183,24 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 12px;
     margin: 14px 0;
   }}
+  .quality {{
+    display: flex; align-items: center; gap: 22px;
+    background: var(--bg-2); border: 1px solid var(--line);
+    border-left: 5px solid var(--bone-faint);
+    padding: 18px 24px; margin: 6px 0 4px;
+  }}
+  .quality.excelente {{ border-left-color: var(--ok); }}
+  .quality.bueno {{ border-left-color: #b8a34a; }}
+  .quality.regular {{ border-left-color: var(--oxblood); }}
+  .quality.bajo {{ border-left-color: var(--oxblood); }}
+  .q-score {{ font-size: 46px; font-weight: 600; color: var(--bone); line-height: 1; white-space: nowrap; }}
+  .q-score span {{ font-size: 18px; color: var(--bone-faint); }}
+  .q-label {{ font-size: 12px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--bone-dim); margin-bottom: 5px; }}
+  .q-interp {{ font-size: 13px; color: var(--bone); }}
+  td.rel-alta {{ color: var(--ok); }}
+  td.rel-media {{ color: var(--bone); }}
+  td.rel-baja {{ color: var(--bone-faint); }}
+  td.zprofile {{ color: var(--bone-dim); font-size: 11px; }}
 </style>
 </head>
 <body>
@@ -193,6 +211,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     {video_name} · {duration_min} min · procesado con stride {stride}
   </div>
 </header>
+
+<div class="quality {quality_tier}">
+  <div class="q-score">{quality_score}<span>/100</span></div>
+  <div class="q-body">
+    <div class="q-label">Calidad del scouting · {quality_label}</div>
+    <div class="q-interp">{quality_interp}</div>
+  </div>
+</div>
+{quality_caveat}
 
 <h2>Resumen</h2>
 <div class="grid">
@@ -249,16 +276,17 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<h2>Top Tracks (10 con más presencia)</h2>
+<h2>Jugadoras seguidas (top 10 por tiempo en cancha)</h2>
 <table>
   <thead>
     <tr>
-      <th>ID</th>
-      <th>Lado</th>
-      <th>Zona dominante</th>
-      <th>Muestras</th>
+      <th>Jugadora</th>
+      <th>Fiabilidad</th>
+      <th>Tiempo en cancha</th>
+      <th>Zona principal</th>
+      <th>Reparto de zonas</th>
       <th>Distancia (m)</th>
-      <th>Velocidad media (m/s)</th>
+      <th>Velocidad (m/s)</th>
     </tr>
   </thead>
   <tbody>
@@ -317,6 +345,28 @@ def render_zone_bars(zones, side_filter=None, max_val=None):
     return "\n".join(html)
 
 
+def fmt_secs(s):
+    """Segundos -> 'Xm YYs' o 'Xs'. El coach piensa en tiempo, no en muestras."""
+    s = int(round(s or 0))
+    return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def quality_verdict(score):
+    """Score 0-100 -> (tier_css, etiqueta, interpretacion en lenguaje de coach)."""
+    if score >= 80:
+        return ("excelente", "Excelente",
+                "Datos confiables — úsalos con confianza, incluso por jugadora.")
+    if score >= 60:
+        return ("bueno", "Bueno",
+                "Datos útiles con reservas: el detalle por jugadora es aproximado; "
+                "el heatmap de zonas y el balón son sólidos.")
+    if score >= 40:
+        return ("regular", "Regular",
+                "Sirve para leer zonas del equipo, no jugadoras individuales.")
+    return ("bajo", "Bajo",
+            "Re-grabar o re-calibrar — no bases decisiones en estos datos.")
+
+
 def embed_image_as_base64(path):
     """Embed image inline en el HTML."""
     if not Path(path).exists():
@@ -353,35 +403,76 @@ def generate_report(json_path, topdown_path=None, output_path=None):
     first_html = render_zone_bars(first_zones, max_val=max_half)
     second_html = render_zone_bars(second_zones, max_val=max_half)
 
-    # Tracks
+    # Tracks — lenguaje de coach: nombre (si hay identidad) o #track, fiabilidad,
+    # tiempo en cancha, zona principal + reparto, distancia, velocidad.
     tracks_html = []
     for t in data.get("tracks", [])[:10]:
-        side_class = f"side-{t.get('side', 'A')}"
+        ident = t.get("identity")
+        name = ident.get("name") if isinstance(ident, dict) else None
+        player = name or f"#{t['id']}"
+        rel = t.get("reliability", "-")
+        prof = t.get("zone_profile_pct", {}) or {}
+        prof_str = " · ".join(f"{z} {p}%" for z, p in list(prof.items())[:3]) or "—"
         tracks_html.append(f'''
           <tr>
-            <td class="id">#{t['id']}</td>
-            <td class="{side_class}">{t.get('side', '-')}</td>
-            <td>{t.get('dominant_zone') or '-'}</td>
-            <td>{t.get('samples', 0)}</td>
+            <td class="id">{player}</td>
+            <td class="rel-{rel}">{rel}</td>
+            <td>{fmt_secs(t.get('seconds_tracked'))}</td>
+            <td>{t.get('dominant_zone') or '—'}</td>
+            <td class="zprofile">{prof_str}</td>
             <td>{t.get('distance_m', 0)}</td>
-            <td>{t.get('avg_speed_m_per_s') or '-'}</td>
+            <td>{t.get('avg_speed_m_per_s') or '—'}</td>
           </tr>
         ''')
 
-    # Ball warning si no hay
+    # Calidad: veredicto en lenguaje de coach
+    score = data.get("quality_score", 0)
+    quality_tier, quality_label, quality_interp = quality_verdict(score)
+
+    # Caveat de sobre-deteccion: si hay muchos mas tracks que jugadoras esperadas,
+    # advertir al coach que el dato por jugadora es aproximado (sin matar el resto).
+    half = data.get("half_court")
+    expected = 6 if half else 12
+    n_tr = data.get("filtered_tracks", 0)
+    quality_caveat = ""
+    if n_tr > expected * 1.5:
+        cancha_txt = "media cancha" if half else "cancha completa"
+        quality_caveat = f'''
+        <div class="warning">
+          ⚠ CLARA siguió <b>{n_tr}</b> tracks, pero en {cancha_txt} se esperan ~{expected}
+          jugadoras. Probablemente incluye banca, árbitros, público cercano o ambos
+          equipos. <b>Trata los datos por jugadora como aproximados</b> — el heatmap
+          de zonas y el balón siguen siendo útiles.
+        </div>
+        '''
+
+    # Ball warning: cero o baja deteccion -> recomendar VballNet (no Roboflow)
     ball_warning = ""
+    ball_rate = data.get("ball_detection_rate", 0)
     if data.get("ball_detections_oncourt", 0) == 0:
         ball_warning = '''
         <div class="warning">
-          ⚠ Cero detecciones de balón. YOLO11 base no es confiable para
-          balones de voleibol. Cuando entrenes el modelo custom en Roboflow,
-          vuelve a procesar con <code>--ball-model balon.pt</code>.
+          ⚠ Cero detecciones de balón. El detector YOLO base no sirve para voleibol.
+          Re-procesa con <code>--ball-detector vballnet --vballnet-model &lt;modelo.onnx&gt;</code>
+          (detección por movimiento, sin entrenar).
+        </div>
+        '''
+    elif ball_rate < 0.15:
+        ball_warning = f'''
+        <div class="warning">
+          ⚠ Detección de balón baja ({ball_rate*100:.0f}%). El balón proyecta fuera de
+          cancha cuando va por el aire, así que el conteo es orientativo, no exhaustivo.
         </div>
         '''
 
     # Compose
     html = HTML_TEMPLATE.format(
         version=data.get("clara_version", "0.4"),
+        quality_tier=quality_tier,
+        quality_score=score,
+        quality_label=quality_label,
+        quality_interp=quality_interp,
+        quality_caveat=quality_caveat,
         video_name=data.get("video", "—"),
         duration_min=data.get("duration_min", 0),
         stride=data.get("stride", 1),
@@ -389,7 +480,7 @@ def generate_report(json_path, topdown_path=None, output_path=None):
         filtered_tracks=data.get("filtered_tracks", 0),
         raw_tracks=data.get("raw_tracks", 0),
         ball_detections_oncourt=data.get("ball_detections_oncourt", 0),
-        ball_model=data.get("ball_model", "—"),
+        ball_model=data.get("ball_detector", data.get("ball_model", "—")),
         court_w=data.get("court_size_m", [0, 0])[0],
         court_h=data.get("court_size_m", [0, 0])[1],
         topdown_html=topdown_html,
