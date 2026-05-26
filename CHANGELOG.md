@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Datos para el coach + validacion multi-gimnasio
+
+Se corrio CLARA en 4 clips reales (3 gimnasios, media y cancha completa, 720p y
+848x478) para validar que las mejoras de tracking no estuvieran sobre-ajustadas a
+un solo video. Hallazgos y cambios:
+
+- **Score `tracks` arreglado (era el ultimo sub-score que premiaba cantidad).**
+  La vieja `min(30, len/esperado*30)` daba 30/30 a CUALQUIER conteo >= esperado:
+  48 tracks para 6 jugadoras puntuaba 30/30 y la CALIDAD global salia
+  91/EXCELENTE -> mentira peligrosa para el coach. Ahora es un ratio SIMETRICO
+  `30 * min(n,esp)/max(n,esp)`: premia ACERTAR el numero de jugadoras y penaliza
+  sobre-deteccion tanto como sub-deteccion. Efecto medido: WA5 (48/6) 91->65,
+  test (8/6) 80->72, 174341 (21/12) 85->72, WA6 (82/12) 91->65. Todos bajan a
+  "BUENO" — honesto: ninguno tiene tracking limpio por jugadora.
+
+- **Esquema de track enriquecido para el coach** (`scouting_data.json`):
+  `seconds_tracked` (el coach piensa en tiempo, no en "muestras"),
+  `zone_profile_pct` (% de tiempo por zona de CADA jugadora — revela la tendencia
+  posicional que el histograma global ocultaba; el "72% en A4" agregado era el
+  track mas largo dominando, no el equipo) y `reliability` (alta/media/baja por
+  nº de muestras, para que el coach sepa de cuales tracks fiarse).
+
+- **`stitch_tracks` 5s/6m: validado, NO universal.** Barrido en metros sobre los
+  4 clips (herramienta: el `raw_tracks.json` que se vuelca + un sweep offline,
+  sin re-trackear). 5/6 es optimo donde el problema es fragmentacion (test) e
+  inofensivo donde no (los demas hacen plateau). NO se cambio: no hay numero
+  magico, el optimo depende del clip. Criterio anti-over-merge: el SPREAD
+  espacial de cada track — si aflojar sube el spread maximo, se estan uniendo
+  jugadoras distintas.
+
+- **Modo de falla dominante = sobre-deteccion, no fragmentacion.** En 3 de 4
+  clips (cancha completa o gym apretado) salen MUCHOS mas tracks que jugadoras
+  (21/12, 48/6, 82/12): ambos equipos + arbitros + suplentes + publico cercano
+  proyectado en cancha, y en 848x478 el ID-churn por baja resolucion. El stitch
+  NO puede arreglarlo (no son fragmentos de la misma jugadora). Callejones sin
+  salida verificados offline (para que nadie los reintente): filtrar tracks
+  casi-inmoviles NO sirve (los extra se mueven) y subir el umbral de confianza NO
+  generaliza (conf>=0.6 limpia algo en WA6 pero destruye test, que cae de 8 a 4).
+  El arreglo real pediria footage de mayor resolucion, un detector de personas
+  especifico de voleibol, o enmascarar zonas de publico — fuera del alcance de un
+  parametro. Mientras tanto, el score honesto y `reliability` se lo advierten al
+  coach.
+
 ### Tracking y métrica de calidad
 
 Contexto: una corrida sobre `data/test.mp4` (media cancha 9×9, 108 s) producía

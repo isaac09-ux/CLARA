@@ -688,12 +688,25 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             if z:
                 zones[z] += 1
         dom = max(zones.items(), key=lambda x: x[1])[0] if zones else None
+        # Perfil de zonas (% del tiempo en cada zona): el coach lee la
+        # tendencia posicional de la jugadora, no solo su zona dominante.
+        ztot = sum(zones.values())
+        zone_profile = ({z: round(c / ztot * 100) for z, c in
+                         sorted(zones.items(), key=lambda x: -x[1])}
+                        if ztot else {})
         side = "A" if half_court or np.median(ys) <= court_h / 2 else "B"
+        # Fiabilidad del track: distingue una jugadora bien seguida de un
+        # fragmento corto, para que el coach sepa de cuales datos fiarse.
+        reliability = ("alta" if len(samples) >= 50 else
+                       "media" if len(samples) >= 25 else "baja")
         metrics["tracks"].append({
             "id": tid, "samples": len(samples),
+            "seconds_tracked": round(t_span, 1),
+            "reliability": reliability,
             "distance_m": round(dist_m, 1),
             "avg_speed_m_per_s": speed,
             "side": side, "dominant_zone": dom,
+            "zone_profile_pct": zone_profile,
             "avg_court_pos_m": [round(float(xs.mean()), 2),
                                 round(float(ys.mean()), 2)],
             "pose_stats": pose_stats.get(tid),
@@ -759,8 +772,14 @@ def compute_quality_score(tracks, zones, ball_frames, rejected,
     """ball_frames: número de frames únicos con al menos una detección de balón
     (no el total de cajas) — acotado a [0, total_samples]."""
     breakdown = {}
-    track_pts = min(30, int(len(tracks) / expected_tracks * 30))
-    breakdown["tracks"] = f"{track_pts}/30 ({len(tracks)} de {expected_tracks})"
+    # Simetrico: premia ACERTAR el numero de jugadoras, no tener "muchas".
+    # 48 tracks para 6 jugadoras es tracking roto (espectadores/fragmentos),
+    # no 30/30. Penaliza sobre-deteccion tanto como sub-deteccion. La vieja
+    # `len/expected*30` topada daba 30/30 a cualquier conteo >= esperado.
+    n_tr = len(tracks)
+    track_ratio = min(n_tr, expected_tracks) / max(n_tr, expected_tracks, 1)
+    track_pts = int(round(30 * track_ratio))
+    breakdown["tracks"] = f"{track_pts}/30 ({n_tr} de {expected_tracks})"
 
     expected_zones = 6 if half_court else 12
     zones_with_data = len([v for v in zones.values() if v > 3])

@@ -48,3 +48,6 @@ roster.json
 
 # Backups
 *.bak
+
+# Scratch de analisis/recon (frames, dumps, sweeps offline)
+_recon/
