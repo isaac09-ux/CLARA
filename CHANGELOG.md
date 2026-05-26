@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Reporte HTML coach-facing** (`clara_report.py`): bloque de Calidad arriba
+  (score + veredicto en lenguaje de coach), caveat de sobre-deteccion (avisa
+  cuando hay muchos mas tracks que jugadoras esperadas y el dato por jugadora es
+  aproximado), y tabla "Jugadoras seguidas" que usa los campos nuevos
+  (nombre/identidad, fiabilidad, tiempo en cancha, zona principal + reparto de
+  zonas %). El aviso de balon ahora recomienda VballNet. Fix: el card de balon
+  leia una llave inexistente (`ball_model`) -> ahora `ball_detector`.
+- **Fix Windows**: `sys.stdout.reconfigure(utf-8)` en `clara.py` y
+  `clara_report.py` — el banner (┌─│ ✓ ⏳ ★) reventaba con UnicodeEncodeError en
+  una PowerShell normal (cp1252). Ahora corre igual en terminal que a archivo.
+- **Tests de no-regresion** (`tests/test_clara_logic.py`, stdlib unittest, sin
+  dependencias): blindan el score `tracks` simetrico, el blend de `estabilidad`,
+  el stitch y la geometria. Correr: `python -m unittest discover tests`.
+
 ## v0.8.0 (2026-05-25) — Detector YOLO11 + métricas honestas para el coach
 
 ### Datos para el coach + validacion multi-gimnasio
