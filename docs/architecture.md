@@ -23,12 +23,12 @@ video.mp4
                      │
                      ▼
 ┌─────────────────────────────────────────────────┐
-│  3. Homography projection + in-court filter     │
-│     - Project bbox feet (people) or center      │
-│       (ball) to court coordinates in meters     │
-│     - Drop projections outside court (margin)   │
-│     - Replaces the old court_horizon_y band,    │
-│       which broke at elevated/oblique angles    │
+│  3. Projection + in-court / ROI filter          │
+│     - People: project feet -> court (m),        │
+│       drop if outside court OR outside the      │
+│       image play ROI (court_roi_polygon)        │
+│     - Ball: kept/dropped in PIXELS, not court   │
+│       coords (aerial balls project off-court)   │
 └────────────────────┬────────────────────────────┘
                      │
                      ▼
@@ -96,6 +96,6 @@ The score tells you which runs are publishable and which need re-grabbing. It's 
 ## Tradeoffs
 
 - **Stride**: higher = faster but loses tracking continuity. Default 5 = 6 Hz sampling, sufficient for zone analytics, not for fast events.
-- **Foreground filter**: bbox-size and bottom-edge guards only. The earlier `court_horizon_y` band assumed a flat-ish viewing angle; on elevated/oblique cameras the court spans ~240 px vertically while the band accepted only ~108 px, so it threw away most players. Filtering now happens post-projection via `is_in_court()`, which uses the homography to test actual court coordinates.
+- **Foreground filter**: bbox-size and bottom-edge guards only. The earlier `court_horizon_y` band assumed a flat-ish viewing angle; on elevated/oblique cameras the court spans ~240 px vertically while the band accepted only ~108 px, so it threw away most players. Player filtering now happens post-projection via `is_in_court()` **plus** an image-space play ROI (`court_roi_polygon` + `point_in_polygon`): the homography extends the floor plane, so spectators behind the endline and the far-side bench project *inside* the numeric court range and `is_in_court()` alone keeps them. The ROI is the court footprint (expanded `--roi-margin` metres, default 2) projected back into the image, where that crowd *is* separated. Disable with `--no-roi`; verify the green polygon in `diagnostic.png`.
 - **VballNet RAM**: full-rate inference on long clips can run the ONNX session out of memory mid-video. Pass `--vballnet-stride 2` (or higher) to feed the 9-frame buffer only every Nth video frame — linear cost/RAM savings at the price of recall.
-- **Ball geometry**: balls projected via centroid land outside court when high in air. This is inherent — single-camera homography assumes ground plane.
+- **Ball geometry**: the single-camera homography maps the *floor* plane, so a ball high in the air projects to where its sight-line hits the floor — well outside the court lines. Filtering the ball by its court projection (the old behaviour) therefore killed ~96% of real aerial detections. CLARA now filters the ball in **pixels** against the court footprint stretched upward for headroom (`ball_valid_region`), keeping `court_x/court_y` only as a floor-reliable hint. The same pixel-space view drives trajectory reconstruction (`ball_trajectory.py`): each free flight is a parabola in the image (constant gravity in `y`), so missed frames between contacts are fit and reprojected — marked `interp=True`, they densify the track for zones/tempo but never count toward recall or the quality score.
