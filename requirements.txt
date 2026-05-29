@@ -11,3 +11,6 @@ rtmlib>=0.0.13
 # Optional: jersey number identification (--identify)
 # easyocr usa torch, que ultralytics ya instala — no añade peso pesado nuevo.
 easyocr>=1.7.0
+
+# Optional: touch_machine.py post-procesador (detección de picos de aceleración)
+scipy>=1.10.0

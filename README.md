@@ -133,6 +133,22 @@ CLARA evaluates its own output across 5 dimensions:
 - **40-59:** insight de zonas, no de jugadoras individuales
 - **<40:** re-grabar o re-calibrar
 
+## Touch & rally detection (post-processor)
+
+`src/touch_machine.py` turns a `scouting_data.json` into per-touch and per-rally
+data **without re-reading the video**. It finds ball contacts as spikes in the
+ball's acceleration and attributes each to the nearest player:
+
+```bash
+pip install scipy
+python src/touch_machine.py results/scouting_data.json   # -> *_enriched.json
+```
+
+It adds `touches[]` (frame, position, attributed `track_id`) and `rallies[]`
+(grouped by ball silence). Runs on CLARA v0.8.1+ output as-is — it needs
+`ball_track` + `track_samples`, both emitted by default. See
+[docs/integrations.md](docs/integrations.md#touch_machine-touch--rally-detection).
+
 ## Project structure
 
 ```
@@ -140,6 +156,7 @@ clara/
 ├── src/
 │   ├── clara.py              — main pipeline (v0.8.0)
 │   ├── clara_report.py       — HTML report generator
+│   ├── touch_machine.py      — touch & rally detection (post-processor)
 │   ├── ball_vballnet.py      — VballNet adapter
 │   ├── pose_rtmlib.py        — RTMPose wrapper + biomechanics
 │   ├── jersey_id.py          — jersey number identification

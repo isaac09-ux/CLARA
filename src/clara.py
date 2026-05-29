@@ -983,6 +983,10 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "zone_visits_first_half": dict(zone_first),
         "zone_visits_second_half": dict(zone_second),
         "tracks": [],
+        # Serie temporal cruda por jugadora (court coords) para post-procesadores
+        # como touch_machine.py. Va aparte de `tracks` (resumen coach-facing) para
+        # NO pisar ese esquema: aquí están las muestras frame a frame.
+        "track_samples": [],
         "pose_stats": pose_stats,
     }
 
@@ -1023,6 +1027,17 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             "pose_stats": pose_stats.get(tid),
         })
     metrics["tracks"].sort(key=lambda t: -t["samples"])
+
+    # Muestras frame a frame de cada track (court coords). touch_machine.py las
+    # usa para atribuir cada toque del balón a la jugadora más cercana; sólo
+    # necesita frame + court_x/court_y, así que el resto del sample se omite.
+    metrics["track_samples"] = [
+        {"id": tid,
+         "samples": [{"frame": s["frame"],
+                      "court_x": round(s["court_x"], 2),
+                      "court_y": round(s["court_y"], 2)} for s in ss]}
+        for tid, ss in filtered.items()
+    ]
 
     # ─── Topdowns ───
     # El topdown es un mapa del PISO: sólo tiene sentido dibujar balones que
