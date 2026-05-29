@@ -33,6 +33,10 @@ Selectores de detector de balón:
 Selectores de pose:
   --pose none      (default — solo bounding boxes)
   --pose rtmlib    (extrae keypoints por jugadora detectada)
+
+Identificación:
+  --identify               (lee número de jersey y lo cruza con --roster)
+  --roster roster.json     (roster {numero: nombre} de tu equipo)
 """
 import cv2
 import numpy as np
@@ -522,6 +526,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         court_model=None,
         roi_margin_m=2.0,
         use_roi=True,
+        identify=False, roster_path="roster.json", id_stride=6,
         save_diagnostic=True):
 
     out = Path(output_dir)
@@ -583,6 +588,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     print(f"│ Cancha: {court_w}x{court_h}m {'[HALF]' if half_court else '[FULL]'}")
     print(f"│ Balón: {ball_detector}")
     print(f"│ Pose:  {pose_mode}")
+    print(f"│ ID:    {'jersey' if identify else 'off'}")
     print(f"│ Stride: {stride}")
     print(f"└──────────────────────────────────────────\n")
 
@@ -601,6 +607,20 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         except ImportError:
             print("⚠ rtmlib no disponible. pip install rtmlib")
             pose_mode = "none"
+
+    # ─── Identificación por número de jersey (opcional) ───
+    # jersey_id usa easyocr; import perezoso para no pagarlo si --identify está
+    # apagado, y para degradar con gracia si falta el paquete o el roster.
+    identifier = None
+    if identify:
+        try:
+            from jersey_id import JerseyIdentifier
+            identifier = JerseyIdentifier(roster_path)
+            print(f"[•] Identificación activada · "
+                  f"{len(identifier.roster)} jugadoras en roster")
+        except (ImportError, FileNotFoundError, ValueError) as e:
+            print(f"⚠ Identificación deshabilitada: {e}")
+            identify = False
 
     raw_tracks = defaultdict(list)
     rejected_counts = defaultdict(int)
@@ -681,7 +701,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                         "bbox": [float(x1), float(y1), float(x2), float(y2)],
                     }
                     raw_tracks[tid].append(sample)
-                    if pose_estimator:
+                    if pose_estimator or identifier:
                         valid_persons.append((tid, sample,
                                               [float(x1), float(y1),
                                                float(x2), float(y2)]))
@@ -722,6 +742,18 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                     except Exception as e:
                         if samples_processed % 50 == 0:
                             print(f"⚠ Pose error frame {actual_frame}: {e}")
+
+            # ─── Identificación: leer número de jersey ───
+            # Reusa r.orig_img (frame ya decodificado por ultralytics) y la
+            # pose ya adjunta al sample si --pose está activo. Espaciado por
+            # id_stride: el OCR es caro y un track no necesita leerse en cada
+            # muestra — la votación se acumula sobre pocas lecturas.
+            if identifier and valid_persons and samples_processed % id_stride == 0:
+                frame_img = getattr(r, "orig_img", None)
+                if frame_img is not None:
+                    for tid, sample, bbox in valid_persons:
+                        identifier.observe(tid, frame_img, bbox,
+                                           pose=sample.get("pose"))
 
         samples_processed += 1
         if samples_processed % 200 == 0:
@@ -953,6 +985,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "half_court": half_court,
         "ball_detector": ball_detector,
         "pose_mode": pose_mode,
+        "identify": identify,
         "raw_tracks": n_tracks_before_stitch,
         "tracks_after_stitch": len(raw_tracks),
         "tracks_stitched": n_stitched,
@@ -1024,6 +1057,19 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         })
     metrics["tracks"].sort(key=lambda t: -t["samples"])
 
+    # ─── Identidades: cerrar votación y adjuntar a cada track ───
+    # La votación se cierra al final (ya se vieron todos los frames del track);
+    # recién aquí cada track anónimo recibe su nombre del roster. Los tracks
+    # rival, sin voto válido, quedan con identity.number=None (anónimos).
+    if identifier:
+        identities = identifier.resolve()
+        for t in metrics["tracks"]:
+            t["identity"] = identities.get(t["id"])
+        metrics["identified_players"] = sum(
+            1 for t in metrics["tracks"]
+            if t.get("identity") and t["identity"]["number"] is not None
+        )
+
     # ─── Topdowns ───
     # El topdown es un mapa del PISO: sólo tiene sentido dibujar balones que
     # estaban cerca del piso, donde su proyección a cancha es fiable. Los
@@ -1085,6 +1131,9 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         print(f"│ Pose: {len(pose_stats)} tracks con keypoints")
     else:
         print(f"│ Pose: deshabilitado")
+    if identifier:
+        named = metrics.get("identified_players", 0)
+        print(f"│ ID: {named}/{len(filtered)} tracks identificados por número")
     print(f"│ Rechazos: {sum(rejected_counts.values())}")
     print(f"│")
     print(f"│ ★ CALIDAD: {score}/100 — {quality_label}")
@@ -1372,6 +1421,15 @@ if __name__ == "__main__":
                         "Subir a 2-3 reduce RAM e inferencias en clips largos a "
                         "costa de recall.")
     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
+    p.add_argument("--identify", action="store_true",
+                   help="Lee el número de jersey de cada track y lo cruza "
+                        "con el roster para nombrar a las jugadoras.")
+    p.add_argument("--roster", default="roster.json",
+                   help="JSON {numero: nombre} de tu equipo (ver "
+                        "roster.example.json).")
+    p.add_argument("--id-stride", type=int, default=6,
+                   help="Corre OCR de número cada N muestras procesadas. "
+                        "Más alto = más rápido, menos lecturas por track.")
     p.add_argument("--roi-margin", type=float, default=2.0,
                    help="Margen en metros alrededor de la cancha para el ROI "
                         "de imagen (filtra público/banca/equipo lejano). "
@@ -1392,4 +1450,7 @@ if __name__ == "__main__":
         pose_mode=a.pose,
         court_model=a.court_model,
         roi_margin_m=a.roi_margin,
-        use_roi=not a.no_roi)
+        use_roi=not a.no_roi,
+        identify=a.identify,
+        roster_path=a.roster,
+        id_stride=a.id_stride)
