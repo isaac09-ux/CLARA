@@ -39,6 +39,27 @@ VballNet is a TrackNetV4-based model that detects the ball using 9 consecutive g
 
 The `src/ball_vballnet.py` adapter handles the sequence buffering and heatmap-to-coordinates conversion. It returns CLARA-compatible ball detection dicts.
 
+### Caching
+
+The VballNet pass (stride-1 inference over the whole video) is the slowest part
+of the pipeline. CLARA caches its **raw** output (pixel coordinates) to disk next
+to the video as `<video>.vballnet_cache.json`. Re-runs with the same
+video/model/stride load the cache and skip the pass entirely — handy while
+iterating on calibration or thresholds.
+
+The cache is **calibration-independent**: court projection and the polygon filter
+are redone on load, so recalibrating does not invalidate it. The key tracks the
+video (name/size/mtime), model name, threshold, and stride; change any of those
+and it recomputes. Writes are atomic, and an unreadable/stale cache falls back to
+recomputing without failing.
+
+```bash
+# Disable caching (always recompute):
+python src/clara.py video.mp4 --calibration cal.json \
+    --ball-detector vballnet --vballnet-model VballNetV1.onnx \
+    --no-vballnet-cache
+```
+
 ---
 
 ## rtmlib (RTMPose keypoints)

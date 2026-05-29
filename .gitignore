@@ -10,6 +10,10 @@ results/
 results_*/
 *.json.bak
 
+# VballNet detection cache (se regenera; vive junto al video)
+*.vballnet_cache.json
+*.vballnet_cache.json.tmp
+
 # Videos
 *.mp4
 *.mov

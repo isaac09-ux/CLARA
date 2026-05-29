@@ -9,7 +9,10 @@ comportamiento, estos tests truenan.
 """
 import sys
 import os
+import types
+import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -276,6 +279,75 @@ class TestBallTrajectory(unittest.TestCase):
         self.assertEqual(dense, [])
         self.assertEqual(summ["total"], 0)
         self.assertEqual(summ["interpolated"], 0)
+
+
+class TestVballNetCache(unittest.TestCase):
+    """Cache en disco de la pasada de VballNet (la parte lenta).
+
+    Se stubea detect_balls para CONTAR cuantas veces corre la pasada: el cache
+    debe saltarla en re-corridas y reinvalidarse al cambiar video/modelo/stride.
+    """
+
+    def setUp(self):
+        self.calls = {"n": 0}
+        fake = types.ModuleType("ball_vballnet")
+
+        def detect_balls(video_path, model_path, threshold=0.5, stride=1,
+                         verbose=True):
+            self.calls["n"] += 1
+            return [{"frame": 0, "x": 1.0, "y": 2.0, "radius": 3.0,
+                     "confidence": 0.9}]
+
+        fake.detect_balls = detect_balls
+        self._patch = mock.patch.dict(sys.modules, {"ball_vballnet": fake})
+        self._patch.start()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.video = os.path.join(self._tmp.name, "match.mp4")
+        with open(self.video, "wb") as f:
+            f.write(b"x" * 128)
+        self.cache = os.path.join(self._tmp.name, "c.json")
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def _detect(self, **over):
+        kw = dict(video_path=self.video, model_path="VballNetV1.onnx",
+                  threshold=0.5, stride=1, verbose=False, cache_path=self.cache)
+        kw.update(over)
+        return clara._vballnet_detect_cached(**kw)
+
+    def test_miss_then_hit(self):
+        r1 = self._detect()
+        self.assertEqual(self.calls["n"], 1)
+        self.assertTrue(os.path.exists(self.cache))
+        r2 = self._detect()
+        self.assertEqual(self.calls["n"], 1, "cache HIT no debe recomputar")
+        self.assertEqual(r1, r2)
+
+    def test_stride_change_invalidates(self):
+        self._detect()
+        self._detect(stride=3)
+        self.assertEqual(self.calls["n"], 2, "cambiar stride invalida el cache")
+
+    def test_use_cache_false_always_recomputes(self):
+        self._detect(use_cache=False)
+        self._detect(use_cache=False)
+        self.assertEqual(self.calls["n"], 2)
+
+    def test_corrupt_cache_falls_back(self):
+        self._detect()
+        with open(self.cache, "w") as f:
+            f.write("{ broken json")
+        self._detect()  # no debe reventar, recomputa
+        self.assertEqual(self.calls["n"], 2)
+
+    def test_key_is_calibration_independent(self):
+        # El cache guarda coords CRUDAS en pixeles; la proyeccion a cancha se
+        # rehace al cargar, asi que recalibrar no debe invalidarlo.
+        k = clara._vballnet_cache_key(self.video, "m.onnx", 0.5, 1)
+        self.assertEqual(
+            set(k), {"video", "size", "mtime", "model", "threshold", "stride"})
 
 
 if __name__ == "__main__":

@@ -318,12 +318,76 @@ def classify_detection(bbox, frame_h, frame_w, court_horizon_y=None,
 # ============================================================
 #  DETECCIÓN DE BALÓN VIA VBALLNET
 # ============================================================
+# ── Cache de la pasada de VballNet ──────────────────────────────
+# La pasada de VballNet (stride 1 sobre todo el video) es la parte lenta.
+# Se cachea su salida CRUDA (coords en píxeles) a disco junto al video. En
+# re-corridas con el mismo video/modelo/stride se carga del cache y se salta
+# la pasada. El cache NO depende de la calibración: la proyección a cancha y
+# el filtro de polígono se rehacen al cargar, así que recalibrar o mover
+# BALL_HEADROOM_FRAC no lo invalida. Cualquier fallo de cache cae a recomputar.
+
+def _vballnet_cache_key(video_path, model_path, threshold, stride):
+    p = Path(video_path)
+    try:
+        st = p.stat()
+        sig = {"video": p.name, "size": st.st_size, "mtime": int(st.st_mtime)}
+    except OSError:
+        sig = {"video": p.name, "size": -1, "mtime": -1}
+    sig["model"] = Path(model_path).name
+    sig["threshold"] = round(float(threshold), 4)
+    sig["stride"] = int(stride)
+    return sig
+
+
+def _vballnet_detect_cached(video_path, model_path, threshold, stride, verbose,
+                            use_cache=True, cache_path=None):
+    """detect_balls envuelto en cache de disco. Devuelve la lista cruda de
+    detecciones (frame, x, y, radius, confidence)."""
+    from ball_vballnet import detect_balls
+
+    if cache_path is None:
+        cache_path = Path(video_path).with_suffix(".vballnet_cache.json")
+    cache_path = Path(cache_path)
+    key = _vballnet_cache_key(video_path, model_path, threshold, stride)
+
+    if use_cache and cache_path.exists():
+        try:
+            with open(cache_path) as f:
+                cached = json.load(f)
+            if cached.get("key") == key:
+                dets = cached["detections"]
+                print(f"[VballNet] cache HIT: {len(dets)} detecciones desde "
+                      f"{cache_path.name} — saltando la pasada")
+                return dets
+            print("[VballNet] cache existe pero cambió video/modelo/stride — "
+                  "recomputando")
+        except (json.JSONDecodeError, KeyError, OSError) as e:
+            print(f"[VballNet] cache ilegible ({e}) — recomputando")
+
+    raw = detect_balls(video_path, model_path,
+                       threshold=threshold, stride=stride, verbose=verbose)
+
+    if use_cache:
+        try:
+            tmp = cache_path.with_name(cache_path.name + ".tmp")
+            with open(tmp, "w") as f:
+                json.dump({"key": key, "detections": raw}, f)
+            tmp.replace(cache_path)   # escritura atómica: un crash no corrompe
+            print(f"[VballNet] cache guardado → {cache_path.name} "
+                  f"({len(raw)} detecciones)")
+        except OSError as e:
+            print(f"[VballNet] no se pudo guardar cache ({e}) — continúo")
+
+    return raw
+
+
 def detect_balls_vballnet(video_path, model_path, H, ppm,
                           court_w, court_h,
                           frame_h, frame_w, court_horizon_y=None,
                           max_h_ratio=0.55, max_w_ratio=0.40,
                           rejected_counts=None,
-                          threshold=0.5, stride=1, verbose=True):
+                          threshold=0.5, stride=1, verbose=True,
+                          use_cache=True, cache_path=None):
     """VballNet adapter. Returns CLARA-compatible ball detection list.
 
     Applies the same foreground filter (bottom-edge guard) used for YOLO
@@ -333,9 +397,9 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
     Reduce inferencias y RAM ~stride×; el balón salta más entre frames de
     la secuencia, así que el recall baja proporcionalmente.
     """
-    from ball_vballnet import detect_balls
-    raw = detect_balls(video_path, model_path,
-                       threshold=threshold, stride=stride, verbose=verbose)
+    raw = _vballnet_detect_cached(video_path, model_path, threshold, stride,
+                                  verbose, use_cache=use_cache,
+                                  cache_path=cache_path)
     out = []
     for d in raw:
         # bbox sintético desde (x, y, radius) para reusar classify_detection.
@@ -518,6 +582,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         person_conf=0.4, ball_conf=0.10,
         ball_detector="yolo", ball_model_path=None, vballnet_model=None,
         vballnet_stride=1,
+        vballnet_cache=True,
         pose_mode="none",
         court_model=None,
         roi_margin_m=2.0,
@@ -778,6 +843,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                                    max_w_ratio=max_w_ratio,
                                    rejected_counts=rejected_counts,
                                    stride=vballnet_stride,
+                                   use_cache=vballnet_cache,
                                    verbose=True)
         )
 
@@ -1386,6 +1452,9 @@ if __name__ == "__main__":
                    help="Submuestreo del buffer de VballNet (1=todos los frames). "
                         "Subir a 2-3 reduce RAM e inferencias en clips largos a "
                         "costa de recall.")
+    p.add_argument("--no-vballnet-cache", action="store_true",
+                   help="No cachear ni leer la pasada de VballNet "
+                        "(siempre recomputa). Por defecto cachea junto al video.")
     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
     p.add_argument("--roi-margin", type=float, default=2.0,
                    help="Margen en metros alrededor de la cancha para el ROI "
@@ -1404,6 +1473,7 @@ if __name__ == "__main__":
         ball_model_path=a.ball_model,
         vballnet_model=a.vballnet_model,
         vballnet_stride=a.vballnet_stride,
+        vballnet_cache=not a.no_vballnet_cache,
         pose_mode=a.pose,
         court_model=a.court_model,
         roi_margin_m=a.roi_margin,
