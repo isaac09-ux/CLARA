@@ -2,6 +2,23 @@
 CLARA v0.8 — Multimodal scouting + auto-calibracion
 Tentáculo de visión por computadora de LUCIA · Las Chispas.
 
+Fusión v0.8 (ROI de jugadoras + parche del balón + reconstrucción):
+  - ROI de jugadoras: el punto de pie se valida en PÍXELES contra el polígono
+    de cancha proyectado por la homografía (court_roi_polygon). Descarta
+    público/banca que is_in_court() deja pasar porque la homografía extiende
+    el plano del piso.
+  - Parche del balón: el balón vuela ENCIMA del piso, así que NO se filtra por
+    su proyección a cancha (un balón aéreo "aterriza" fuera de línea y el
+    filtro viejo mataba ~96% de lo detectado). Se filtra en PÍXELES contra la
+    cancha-en-imagen estirada hacia arriba (ball_valid_region). Cada detección
+    conserva img_x/img_y; filter_ball_tracks agrupa por píxeles.
+  - UNIFICADO: un solo point_in_polygon (cv2) sirve a jugadoras y balón.
+    Antes había point_in_roi (cv2) y point_in_polygon (ray-casting) duplicados.
+  - ball_detection_rate con denominador honesto (frames realmente evaluados).
+  - JSON: ball_track (detecciones reales) + ball_track_reconstructed
+    (trayectoria densa por vuelo; ver ball_trajectory.py). Reconstrucción NO
+    infla el score — recall y calidad se miden sobre detecciones reales.
+
 Cambios v0.5.1 → v0.6:
   - INTEGRACIÓN: VballNet (TrackNetV4) como detector de balón opcional
     Motion-based, ~70% recall sin entrenamiento en gyms nuevos
@@ -26,6 +43,10 @@ from pathlib import Path
 from collections import defaultdict
 from ultralytics import YOLO
 
+# Reconstrucción de trayectoria del balón (rellena los huecos de VballNet por
+# vuelo, en espacio de imagen). Módulo propio, sólo depende de numpy.
+from ball_trajectory import reconstruct_trajectory
+
 # En consolas Windows (cp1252) los caracteres de caja (┌─│), ✓, ⏳, ★ del banner
 # revientan stdout con UnicodeEncodeError. Forzar utf-8 hace que CLARA corra
 # igual en una PowerShell normal, no solo redirigida a archivo.
@@ -43,6 +64,27 @@ PAL_DARK = (84, 79, 68)
 PAL_WARN = (60, 156, 220)
 PAL_BALL = (60, 220, 230)
 PAL_REJECT = (60, 60, 165)
+
+
+# ── Región de validez del balón en píxeles ──────────────────
+# El balón vuela ENCIMA del plano de cancha. Proyectarlo por la homografía
+# del piso lo manda a coordenadas de cancha falsas (un balón aéreo "aterriza"
+# fuera de las líneas). Por eso el balón NO se filtra con is_in_court sobre
+# court_x/court_y — se filtra en PÍXELES contra el polígono de la cancha
+# (pixel_corners de MIRA) estirado hacia arriba para darle aire al balón.
+# Estas 3 constantes son las únicas perillas de criterio; se calibran mirando
+# los resultados sobre tu propio video.
+BALL_HEADROOM_FRAC = 0.50      # aire SOBRE la cancha que cuenta como válido,
+                               # fracción del alto del frame. Generoso a
+                               # propósito: un FP de más lo limpia
+                               # filter_ball_tracks; matar un balón aéreo
+                               # real reproduce justo el bug que arreglamos.
+BALL_SIDE_MARGIN_FRAC = 0.03   # margen lateral, fracción del ancho del frame.
+                               # Apretado: un balón muy fuera de banda es
+                               # del público / otra cancha.
+BALL_MAX_JUMP_PX_PER_FRAME = 0.09  # salto máximo del balón entre frames,
+                                   # fracción del ancho. Escala con el gap
+                                   # temporal dentro de filter_ball_tracks.
 
 
 # ============================================================
@@ -87,21 +129,132 @@ def is_in_court(cx, cy, cw, ch, margin=0.5):
             -margin <= cx <= cw + margin and -margin <= cy <= ch + margin)
 
 
-def filter_ball_tracks(detections, stride, max_gap=None,
-                       max_dist_m=6.0, min_track_len=2):
+def court_roi_polygon(H, court_w, court_h, ppm, margin_m=2.0):
+    """Polígono de la zona de juego en PÍXELES DE IMAGEN (no en cancha).
+
+    is_in_court() filtra en coords proyectadas, pero el público detrás de la
+    línea de fondo y el equipo del lado lejano (en media cancha) se PROYECTAN
+    dentro del rango numérico de la cancha — la homografía extiende el plano
+    del piso, así que gente parada en ese plano cae en coords [0..court].
+    Por eso is_in_court() no los descarta.
+
+    Este polígono trabaja en el espacio donde esa gente SÍ está separada: la
+    imagen. Tomamos las 4 esquinas de la cancha (expandidas margin_m metros
+    para no recortar jugadoras que persiguen balones fuera de línea o sacan
+    desde atrás del fondo), las llevamos de metros → topdown(px) → imagen con
+    H^-1. El margen se expande EN METROS (uniforme en cancha) y luego se
+    proyecta, así respeta la perspectiva: cerca de cámara el margen se ve
+    grande, lejos se ve chico — que es justo lo que se quiere.
+
+    Devuelve un np.array (4,2) int32 listo para cv2.pointPolygonTest /
+    cv2.polylines, o None si H no es invertible.
+
+    Nota media cancha: un margen grande sobre la red (borde court_h) puede
+    readmitir al equipo del lado lejano. Verifica el polígono en
+    diagnostic.png y baja --roi-margin si se cuela gente del fondo.
+    """
+    try:
+        Hinv = np.linalg.inv(np.array(H, dtype=np.float64))
+    except np.linalg.LinAlgError:
+        return None
+    m = margin_m
+    # esquinas de cancha expandidas, en metros
+    corners_m = np.array([
+        [-m,            -m],
+        [court_w + m,   -m],
+        [court_w + m,    court_h + m],
+        [-m,             court_h + m],
+    ], dtype=np.float64)
+    # metros -> topdown(px) -> imagen(px)
+    topdown = (corners_m * ppm).reshape(-1, 1, 2).astype(np.float32)
+    img_pts = cv2.perspectiveTransform(topdown, Hinv.astype(np.float32))
+    return img_pts.reshape(-1, 2).astype(np.int32)
+
+
+def point_in_polygon(px, py, polygon):
+    """True si (px,py) cae dentro del polígono (o si no hay polígono).
+
+    UNIFICADO: única prueba punto-en-polígono de CLARA. La usan tanto el ROI
+    de jugadoras (court_roi_polygon — trapecio en perspectiva) como el filtro
+    del balón (ball_valid_region — bbox recto con headroom). Antes había dos
+    implementaciones (point_in_roi con cv2 y point_in_polygon con ray-casting);
+    esta las reemplaza. Acepta el polígono como np.array (N,2) o lista de
+    (x,y), en float o int. polygon None => sin filtro => todo pasa.
+    """
+    if polygon is None:
+        return True
+    poly = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    return cv2.pointPolygonTest(poly, (float(px), float(py)), False) >= 0
+
+
+def ball_valid_region(cal, frame_h, frame_w):
+    """Polígono (en píxeles) donde un balón es válido: la cancha estirada
+    hacia arriba para darle aire al balón aéreo.
+
+    Variante del mismo concepto que court_roi_polygon (el footprint de la
+    cancha en la imagen), pero con geometría distinta a propósito:
+      - court_roi_polygon proyecta la cancha+margen por la homografía → trapecio
+        en perspectiva. Correcto para el PIE de una jugadora (está en el piso).
+      - aquí se usa el BOUNDING BOX recto de pixel_corners, expandido mucho
+        hacia ARRIBA (headroom) y poco a los lados/abajo. Un bbox recto y no
+        las bandas prolongadas porque prolongar las bandas convergentes hasta
+        el techo las cruza en el punto de fuga y el polígono se autointersecta.
+        El box recto siempre contiene la cancha y no tiene esa patología.
+
+    Parte de pixel_corners de MIRA (las 4 esquinas de la cancha en píxeles).
+    Devuelve 4 vértices [(x,y)...] o None si no hay pixel_corners utilizables
+    (calibración vieja) — el llamador cae entonces al filtro por proyección.
+    """
+    pc = cal.get("pixel_corners")
+    if not pc or len(pc) != 4:
+        return None
+    try:
+        corners = [(float(x), float(y)) for x, y in pc]
+    except (TypeError, ValueError):
+        return None
+    if not all(np.isfinite(v) for c in corners for v in c):
+        return None
+
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    side = BALL_SIDE_MARGIN_FRAC * frame_w
+    bottom_m = BALL_SIDE_MARGIN_FRAC * frame_h     # tolerancia bajo la red
+    headroom = BALL_HEADROOM_FRAC * frame_h        # aire sobre la cancha
+
+    left = min(xs) - side
+    right = max(xs) + side
+    y_bottom = max(ys) + bottom_m
+    y_top = max(0.0, min(ys) - headroom)
+
+    return [
+        (left, y_bottom),    # inferior izq (bajo la línea cercana)
+        (right, y_bottom),   # inferior der
+        (right, y_top),      # superior der (techo)
+        (left, y_top),       # superior izq
+    ]
+
+
+def filter_ball_tracks(detections, stride, frame_w, max_gap=None,
+                       max_jump_px_per_frame=None, min_track_len=2):
     """Agrupa detecciones de balón en tracks por cercanía temporal y espacial,
     descarta tracks cortos (FPs aislados: luces, banderines, balones del público).
 
-    Una detección sólo sobrevive si tiene al menos otra detección dentro de
-    max_gap frames Y max_dist_m metros en coords de cancha. Sin entrenar nada,
-    elimina los falsos positivos puntuales que un buen detector frame-por-frame
-    no puede distinguir de un balón real.
+    Una detección sólo sobrevive si tiene al menos otra dentro de max_gap
+    frames Y de un salto en PÍXELES coherente con la velocidad del balón.
+
+    La cercanía espacial se mide en píxeles, NO en metros de cancha: las
+    coords de cancha de un balón aéreo son basura (la homografía mapea el
+    piso). En píxeles el balón traza un arco suave cuadro a cuadro; un foco
+    parpadeando no. El umbral escala con el gap temporal — un balón rápido
+    puede saltar mucho entre dos detecciones separadas.
     """
     if len(detections) < min_track_len:
         return []
     if max_gap is None:
         # Un par de strides cubre saltos breves sin pegar tracks no relacionados.
         max_gap = max(stride * 3, 6)
+    if max_jump_px_per_frame is None:
+        max_jump_px_per_frame = BALL_MAX_JUMP_PX_PER_FRAME * frame_w
 
     dets = sorted(detections, key=lambda d: d["frame"])
     tracks = []
@@ -109,9 +262,10 @@ def filter_ball_tracks(detections, stride, max_gap=None,
     for d in dets[1:]:
         prev = current[-1]
         gap = d["frame"] - prev["frame"]
-        dx = d["court_x"] - prev["court_x"]
-        dy = d["court_y"] - prev["court_y"]
-        if gap <= max_gap and (dx * dx + dy * dy) ** 0.5 <= max_dist_m:
+        dx = d["img_x"] - prev["img_x"]
+        dy = d["img_y"] - prev["img_y"]
+        max_jump = max_jump_px_per_frame * max(gap, 1)
+        if gap <= max_gap and (dx * dx + dy * dy) ** 0.5 <= max_jump:
             current.append(d)
         else:
             tracks.append(current)
@@ -200,6 +354,10 @@ def detect_balls_vballnet(video_path, model_path, H, ppm,
         cx_m, cy_m = project(H, d["x"], d["y"])
         out.append({
             "frame": d["frame"],
+            # Posición en PÍXELES — la verdad principal del balón (la
+            # proyección a cancha sólo es fiable cerca del piso).
+            "img_x": float(d["x"]),
+            "img_y": float(d["y"]),
             "court_x": float(cx_m) / ppm,
             "court_y": float(cy_m) / ppm,
             "conf": d["confidence"],
@@ -362,6 +520,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         vballnet_stride=1,
         pose_mode="none",
         court_model=None,
+        roi_margin_m=2.0,
+        use_roi=True,
         save_diagnostic=True):
 
     out = Path(output_dir)
@@ -398,6 +558,13 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     ppm = cal["pixels_per_meter"]
     half_court = cal.get("half_court", False)
     court_horizon_y = cal.get("court_horizon_y", None)
+
+    # ROI de zona de juego en píxeles de imagen. Descarta público/banca/equipo
+    # lejano que se proyecta dentro del rango de cancha pero está fuera de la
+    # cancha EN LA IMAGEN. Ver court_roi_polygon() para el porqué.
+    roi_poly = court_roi_polygon(H, court_w, court_h, ppm, roi_margin_m) if use_roi else None
+    if use_roi and roi_poly is None:
+        print("⚠ ROI desactivado: homografía no invertible.")
     max_h_ratio = cal.get("max_person_height_ratio", 0.55)
     max_w_ratio = cal.get("max_person_width_ratio", 0.40)
 
@@ -501,6 +668,12 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                     if status != "ok":
                         rejected_counts[status] += 1
                         continue
+                    # ROI en espacio de imagen: el punto de pie debe caer
+                    # dentro de la zona de juego. Filtra público/banca/equipo
+                    # lejano que is_in_court() deja pasar (ver court_roi_polygon).
+                    if not point_in_polygon(cx, ground_y, roi_poly):
+                        rejected_counts["fg_outside_roi"] += 1
+                        continue
                     sample = {
                         "frame": actual_frame,
                         "court_x": court_x, "court_y": court_y,
@@ -522,6 +695,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                         continue
                     ball_detections.append({
                         "frame": actual_frame,
+                        # cx / ground_y = centro del bbox del balón (px).
+                        "img_x": float(cx), "img_y": float(ground_y),
                         "court_x": court_x, "court_y": court_y,
                         "conf": conf,
                     })
@@ -581,6 +756,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                     cx_m, cy_m = project(H, cx, cy)
                     ball_detections.append({
                         "frame": fi,
+                        "img_x": float(cx), "img_y": float(cy),
                         "court_x": float(cx_m) / ppm,
                         "court_y": float(cy_m) / ppm,
                         "conf": conf,
@@ -653,19 +829,52 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
                 else:
                     zone_second[z] += 1
 
-    ball_clean = [b for b in ball_detections
-                  if is_in_court(b["court_x"], b["court_y"],
-                                 court_w, court_h, margin=2)]
+    # ─── Filtrado de balón: en PÍXELES contra el polígono de cancha ───
+    # El balón vuela encima del piso; proyectarlo por la homografía del piso
+    # da coords de cancha falsas (un balón aéreo "aterriza" fuera de las
+    # líneas, e is_in_court lo mataba — se perdía ~96% de lo detectado).
+    # Se filtra con el píxel del balón contra la cancha-en-imagen estirada
+    # hacia arriba. court_x/court_y se conservan: son fiables cuando el balón
+    # está cerca del piso (para saber en qué zona cayó la jugada).
+    ball_region = ball_valid_region(cal, Hf, W)
+    if ball_region is not None:
+        ball_clean = [b for b in ball_detections
+                      if point_in_polygon(b["img_x"], b["img_y"], ball_region)]
+        ball_filter_mode = "pixel_polygon"
+    else:
+        # Calibración sin pixel_corners (cal viejo): cae al filtro anterior.
+        print("⚠ cal.json sin pixel_corners — balón filtrado por proyección "
+              "(modo previo). Recalibra con MIRA para el filtro en píxeles.")
+        ball_clean = [b for b in ball_detections
+                      if is_in_court(b["court_x"], b["court_y"],
+                                     court_w, court_h, margin=2)]
+        ball_filter_mode = "court_projection_fallback"
     ball_before_tracking = len(ball_clean)
-    ball_clean = filter_ball_tracks(ball_clean, stride=stride)
+    ball_clean = filter_ball_tracks(ball_clean, stride=stride, frame_w=W)
     ball_isolated_dropped = ball_before_tracking - len(ball_clean)
     if ball_isolated_dropped > 0:
         rejected_counts["ball_isolated"] = ball_isolated_dropped
 
-    # Frames únicos con al menos una detección de balón — métrica acotada a
-    # [0, samples_processed]. Distinta de len(ball_clean) cuando un detector
-    # emite varias cajas en el mismo frame.
+    # Frames únicos con al menos una detección de balón limpia.
     ball_frames_oncourt = len({b["frame"] for b in ball_clean})
+    # Denominador honesto: frames que el detector de balón REALMENTE evaluó.
+    # vballnet corre sobre el video completo / vballnet_stride; yolo va en el
+    # loop de personas, con su stride. (El bug previo dividía frames de balón
+    # a tasa completa entre samples_processed, que va con stride: unidades
+    # distintas, tasa subestimada.)
+    if ball_detector == "vballnet":
+        ball_frames_evaluated = max(1, total_frames // max(vballnet_stride, 1))
+    else:
+        ball_frames_evaluated = max(1, samples_processed)
+
+    # ─── Reconstrucción de trayectoria del balón (rellena huecos) ───
+    # VballNet detecta ~1 de cada 3 frames; entre dos contactos el balón vuela
+    # en arco, así que los frames perdidos se reconstruyen ajustando el vuelo
+    # en espacio de imagen (img_x/img_y) y reproyectando a cancha. Los puntos
+    # interpolados van marcados (interp=True) y NO cuentan para el recall ni el
+    # score — esto sólo densifica la trayectoria para zonas/tempo/visualización.
+    ball_trajectory_dense, recon_summary = reconstruct_trajectory(
+        ball_clean, fps, H, ppm, frame_w=W)
 
     # ─── Segmentación de rallies / saques (heurística sobre el balón) ───
     rallies, play_summary = segment_rallies(
@@ -675,7 +884,8 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     expected_tracks = 6 if half_court else 12
     score, score_breakdown = compute_quality_score(
         filtered, zone_visits, ball_frames_oncourt, rejected_counts,
-        samples_processed, expected_tracks, half_court
+        samples_processed, expected_tracks, half_court,
+        ball_frames_evaluated=ball_frames_evaluated,
     )
 
     # ─── Pose analytics ───
@@ -721,6 +931,17 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         except ImportError:
             pass
 
+    # Trayectoria del balón — DETECCIONES REALES (para la máquina de toques).
+    # img_x/img_y es la verdad principal; court_x/court_y es fiable sólo con
+    # el balón cerca del piso.
+    ball_track = sorted(
+        ({"frame": b["frame"],
+          "img_x": round(b["img_x"], 1), "img_y": round(b["img_y"], 1),
+          "court_x": round(b["court_x"], 2), "court_y": round(b["court_y"], 2),
+          "conf": round(float(b["conf"]), 3)}
+         for b in ball_clean),
+        key=lambda b: b["frame"])
+
     metrics = {
         "clara_version": "0.8",
         "video": Path(video_path).name,
@@ -739,14 +960,25 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         "rejected_detections": dict(rejected_counts),
         "ball_detections_oncourt": len(ball_clean),
         "ball_frames_oncourt": ball_frames_oncourt,
-        "ball_detection_rate": round(ball_frames_oncourt / max(samples_processed, 1), 3),
+        "ball_frames_evaluated": ball_frames_evaluated,
+        "ball_detection_rate": round(
+            ball_frames_oncourt / max(ball_frames_evaluated, 1), 3),
+        "ball_filter": ball_filter_mode,
         "quality_score": score,
         "quality_breakdown": score_breakdown,
         "play_summary": play_summary,
         "rallies": rallies,
+        # Legacy: trayectoria en coords de cancha de las detecciones reales.
+        # Se conserva por compatibilidad con clara_report; para análisis usa
+        # ball_track (real) y ball_track_reconstructed (densa).
         "ball_trajectory": [[b["frame"], round(b["court_x"], 2),
                              round(b["court_y"], 2)]
                             for b in sorted(ball_clean, key=lambda b: b["frame"])],
+        "ball_track": ball_track,
+        # Trayectoria densa: detecciones reales + frames interpolados por vuelo
+        # (interp=True). NO afecta recall ni score; densifica para zonas/tempo.
+        "ball_track_reconstructed": ball_trajectory_dense,
+        "ball_reconstruction": recon_summary,
         "zone_visits_total": dict(zone_visits),
         "zone_visits_first_half": dict(zone_first),
         "zone_visits_second_half": dict(zone_second),
@@ -793,27 +1025,33 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     metrics["tracks"].sort(key=lambda t: -t["samples"])
 
     # ─── Topdowns ───
-    save_topdown(filtered, ball_clean, court_w, court_h, ppm,
+    # El topdown es un mapa del PISO: sólo tiene sentido dibujar balones que
+    # estaban cerca del piso, donde su proyección a cancha es fiable. Los
+    # balones aéreos siguen en ball_track (JSON) para la máquina de toques.
+    ball_floor = [b for b in ball_clean
+                  if is_in_court(b["court_x"], b["court_y"],
+                                 court_w, court_h, margin=1.0)]
+    save_topdown(filtered, ball_floor, court_w, court_h, ppm,
                  out / "topdown.png", title="Total",
                  metrics=metrics, half_court=half_court)
     first = {tid: [s for s in ss if s["frame"] < half_frame]
              for tid, ss in filtered.items()}
     first = {k: v for k, v in first.items() if len(v) >= 5}
-    save_topdown(first, [b for b in ball_clean if b["frame"] < half_frame],
+    save_topdown(first, [b for b in ball_floor if b["frame"] < half_frame],
                  court_w, court_h, ppm,
                  out / "topdown_first_half.png", title="Primera mitad",
                  half_court=half_court)
     second = {tid: [s for s in ss if s["frame"] >= half_frame]
               for tid, ss in filtered.items()}
     second = {k: v for k, v in second.items() if len(v) >= 5}
-    save_topdown(second, [b for b in ball_clean if b["frame"] >= half_frame],
+    save_topdown(second, [b for b in ball_floor if b["frame"] >= half_frame],
                  court_w, court_h, ppm,
                  out / "topdown_second_half.png", title="Segunda mitad",
                  half_court=half_court)
 
     if save_diagnostic:
         save_diagnostic_frame(video_path, cal, rejected_counts,
-                              out / "diagnostic.png", H, ppm)
+                              out / "diagnostic.png", H, ppm, roi_poly=roi_poly)
         if pose_estimator:
             save_pose_sample(video_path, filtered,
                               out / "pose_sample.png")
@@ -832,7 +1070,12 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     if n_stitched > 0:
         print(f"│ Tracks cosidos: {n_stitched} fragmentos unidos")
     print(f"│ Balones: {len(ball_clean)} ({metrics['ball_detection_rate']*100:.1f}%) "
-          f"[{ball_detector}]")
+          f"[{ball_detector}/{ball_filter_mode}]")
+    if recon_summary.get("interpolated", 0) > 0:
+        print(f"│ Trayectoria: {recon_summary['total']} puntos "
+              f"({recon_summary['real']} reales + "
+              f"{recon_summary['interpolated']} interpolados, "
+              f"{recon_summary['flights']} vuelos)")
     if play_summary["n_rallies"] > 0:
         print(f"│ Rallies: {play_summary['n_rallies']} "
               f"(~{play_summary['n_serves']} saques) · "
@@ -852,9 +1095,12 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
 
 
 def compute_quality_score(tracks, zones, ball_frames, rejected,
-                          total_samples, expected_tracks, half_court):
-    """ball_frames: número de frames únicos con al menos una detección de balón
-    (no el total de cajas) — acotado a [0, total_samples]."""
+                          total_samples, expected_tracks, half_court,
+                          ball_frames_evaluated=None):
+    """ball_frames: número de frames únicos con al menos una detección de balón.
+    ball_frames_evaluated: frames que el detector de balón realmente evaluó —
+    denominador correcto para la tasa de balón. Si no se pasa, cae a
+    total_samples (compatibilidad)."""
     breakdown = {}
     # Simetrico: premia ACERTAR el numero de jugadoras, no tener "muchas".
     # 48 tracks para 6 jugadoras es tracking roto (espectadores/fragmentos),
@@ -870,7 +1116,8 @@ def compute_quality_score(tracks, zones, ball_frames, rejected,
     zone_pts = min(25, int(zones_with_data / expected_zones * 25))
     breakdown["zonas"] = f"{zone_pts}/25 ({zones_with_data} de {expected_zones})"
 
-    ball_rate = ball_frames / max(total_samples, 1)
+    ball_denom = ball_frames_evaluated if ball_frames_evaluated else total_samples
+    ball_rate = ball_frames / max(ball_denom, 1)
     if ball_rate >= 0.50:
         ball_pts = 20
     elif ball_rate >= 0.10:
@@ -1020,7 +1267,8 @@ def save_topdown(tracks, ball, court_w, court_h, ppm, path,
     cv2.imwrite(str(path), img)
 
 
-def save_diagnostic_frame(video_path, cal, rejected_counts, path, H, ppm):
+def save_diagnostic_frame(video_path, cal, rejected_counts, path, H, ppm,
+                          roi_poly=None):
     cap = cv2.VideoCapture(video_path)
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.set(cv2.CAP_PROP_POS_FRAMES, total // 2)
@@ -1035,6 +1283,10 @@ def save_diagnostic_frame(video_path, cal, rejected_counts, path, H, ppm):
         cv2.polylines(frame, [pts], True, (60, 220, 230), 2)
         for x, y in corners:
             cv2.circle(frame, (int(x), int(y)), 6, (60, 220, 230), -1)
+    # ROI de zona de juego (verde): todo punto de pie fuera de aquí se descarta.
+    if roi_poly is not None:
+        cv2.polylines(frame, [roi_poly.reshape(-1, 1, 2)], True,
+                      (90, 156, 122), 2, cv2.LINE_AA)
     hor = cal.get("court_horizon_y")
     if hor is not None:
         cv2.line(frame, (0, int(hor)), (Wf, int(hor)),
@@ -1120,6 +1372,14 @@ if __name__ == "__main__":
                         "Subir a 2-3 reduce RAM e inferencias en clips largos a "
                         "costa de recall.")
     p.add_argument("--pose", choices=["none", "rtmlib"], default="none")
+    p.add_argument("--roi-margin", type=float, default=2.0,
+                   help="Margen en metros alrededor de la cancha para el ROI "
+                        "de imagen (filtra público/banca/equipo lejano). "
+                        "Súbelo si recorta jugadoras reales, bájalo si se "
+                        "cuela gente del fondo. Verifica en diagnostic.png.")
+    p.add_argument("--no-roi", action="store_true",
+                   help="Desactiva el filtro ROI de imagen (vuelve al "
+                        "comportamiento previo: solo is_in_court).")
     a = p.parse_args()
     if a.calibration is None and a.court_model is None:
         p.error("Se requiere --calibration cal.json o --court-model modelo.pt")
@@ -1130,4 +1390,6 @@ if __name__ == "__main__":
         vballnet_model=a.vballnet_model,
         vballnet_stride=a.vballnet_stride,
         pose_mode=a.pose,
-        court_model=a.court_model)
+        court_model=a.court_model,
+        roi_margin_m=a.roi_margin,
+        use_roi=not a.no_roi)

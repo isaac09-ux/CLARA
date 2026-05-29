@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- **ROI de jugadoras en espacio de imagen** (`clara.py`): `is_in_court()` filtra
+  en coordenadas proyectadas, pero la homografía extiende el plano del piso — el
+  público detrás del fondo y la banca del lado lejano se proyectan DENTRO del
+  rango numérico de la cancha y pasaban el filtro. El ROI nuevo
+  (`court_roi_polygon` + `point_in_polygon`) toma la huella de la cancha
+  (expandida `--roi-margin` metros, default 2), la reproyecta a la imagen —donde
+  esa gente SÍ está separada— y valida ahí el punto de pie de cada jugadora. Se
+  dibuja en verde en `diagnostic.png` para verificarlo; se apaga con `--no-roi`.
+  Unifica además las dos pruebas punto-en-polígono que había (cv2 + ray-casting)
+  en una sola (`point_in_polygon`, cv2).
+- **Parche del balón: filtro en PÍXELES, no por proyección** (`clara.py`): el
+  balón vuela ENCIMA del piso; la homografía mapea el piso, así que un balón
+  aéreo "aterriza" fuera de las líneas y el filtro viejo (`is_in_court` sobre su
+  proyección) mataba ~96% de lo detectado. Ahora se filtra en píxeles contra la
+  cancha-en-imagen estirada hacia arriba (`ball_valid_region`, sobre
+  `pixel_corners`); `court_x/court_y` se conserva sólo como pista fiable cerca
+  del piso. `filter_ball_tracks` agrupa por píxeles (salto coherente con la
+  velocidad del balón) en vez de metros de cancha. Calibración vieja sin
+  `pixel_corners` → cae al filtro por proyección y avisa.
+- **Reconstrucción de trayectoria del balón** (`ball_trajectory.py`, módulo
+  nuevo, sólo numpy/cv2): VballNet detecta ~1 de cada 3 frames; entre dos
+  contactos el balón vuela en arco, así que los frames perdidos NO se adivinan —
+  están determinados por el vuelo que los rodea. Se ajusta el vuelo en espacio
+  de imagen (recta en x, parábola en y por gravedad) y se reproyecta a cancha.
+  Los contactos se detectan como "donde una sola parábola deja de ajustar"
+  (split-and-fit recursivo por residual), sin umbrales de ángulo frágiles.
+  HONESTIDAD: los puntos interpolados van marcados `interp=True` y NO cuentan
+  para el recall ni el score — sólo densifican la trayectoria para zonas, tempo y
+  visualización. Sale en `scouting_data.json` como `ball_track_reconstructed`
+  (+ `ball_track` con las detecciones reales y `ball_reconstruction`, el resumen).
+- **Tasa de balón con denominador honesto** (`clara.py`): `ball_detection_rate`
+  dividía frames de balón (tasa completa) entre `samples_processed` (que va con
+  stride) — unidades distintas, tasa subestimada. Ahora divide entre los frames
+  que el detector REALMENTE evaluó (`ball_frames_evaluated`: para vballnet,
+  `total_frames // vballnet_stride`; para yolo, `samples_processed`).
 - **Reporte HTML coach-facing** (`clara_report.py`): bloque de Calidad arriba
   (score + veredicto en lenguaje de coach), caveat de sobre-deteccion (avisa
   cuando hay muchos mas tracks que jugadoras esperadas y el dato por jugadora es
@@ -12,9 +47,13 @@
 - **Fix Windows**: `sys.stdout.reconfigure(utf-8)` en `clara.py` y
   `clara_report.py` — el banner (┌─│ ✓ ⏳ ★) reventaba con UnicodeEncodeError en
   una PowerShell normal (cp1252). Ahora corre igual en terminal que a archivo.
-- **Tests de no-regresion** (`tests/test_clara_logic.py`, stdlib unittest, sin
-  dependencias): blindan el score `tracks` simetrico, el blend de `estabilidad`,
-  el stitch y la geometria. Correr: `python -m unittest discover tests`.
+- **Tests de no-regresion** (`tests/test_clara_logic.py`, stdlib unittest):
+  blindan el score `tracks` simetrico, el blend de `estabilidad`, el stitch y la
+  geometria. Añade `TestROI` (poligono ROI + `point_in_polygon`: dentro/fuera,
+  margen, homografia singular) y `TestBallTrajectory` (relleno de huecos de un
+  vuelo, reproyeccion a cancha, passthrough con pocos puntos, no-puenteo de
+  huecos muertos, corte en contacto). 27 tests en total. Correr:
+  `python -m unittest discover tests`.
 
 ## v0.8.0 (2026-05-25) — Detector YOLO11 + métricas honestas para el coach
 
