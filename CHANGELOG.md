@@ -54,6 +54,29 @@
   vuelo, reproyeccion a cancha, passthrough con pocos puntos, no-puenteo de
   huecos muertos, corte en contacto). 27 tests en total. Correr:
   `python -m unittest discover tests`.
+- **Máquina de toques** (`touch_machine.py`, post-procesador nuevo; sólo numpy +
+  scipy): lee `scouting_data.json` y escribe una copia enriquecida con
+  `touches[]` (frame, posición, jugadora atribuida) y `rallies[]` (agrupados por
+  silencio del balón). Detecta cada contacto como un pico de la MAGNITUD de la
+  aceleración del balón (`scipy.signal.find_peaks`) y lo atribuye a la jugadora
+  más cercana en cancha. No reprocesa el video: tuneas los umbrales y re-corres.
+  Para alimentarlo, `clara.py` ahora exporta `track_samples` (serie por jugadora,
+  frame a frame, en court coords) APARTE del resumen `tracks` — no lo pisa, así
+  el reporte coach-facing queda intacto. `scipy` entra como dependencia opcional.
+  El `_extract_tracks` prefiere `track_samples` e ignora sin reventar un `tracks`
+  que sólo traiga el conteo (antes: `TypeError` con `sorted(int)`). Tests en
+  `tests/test_touch_machine.py` (contrato del JSON, detección de quiebres,
+  atribución al jugador más cercano, corte de rallies; corren sin el stack
+  pesado de cv2/ultralytics).
+- **Cache de la pasada de VballNet** (`clara.py`): la inferencia de VballNet
+  (stride 1 sobre todo el video) es lo más lento del pipeline; ahora su salida
+  CRUDA (coords en píxeles) se cachea a disco junto al video
+  (`<video>.vballnet_cache.json`, escritura atómica). En re-corridas con el mismo
+  video/modelo/stride se carga del cache y se salta la pasada — clave al iterar
+  calibración o thresholds. El cache NO depende de la calibración: la proyección
+  a cancha y el filtro de polígono se rehacen al cargar, así que recalibrar no lo
+  invalida. Se apaga con `--no-vballnet-cache`; un cache ilegible/obsoleto cae a
+  recomputar sin reventar. Tests en `TestVballNetCache`.
 
 ## v0.8.0 (2026-05-25) — Detector YOLO11 + métricas honestas para el coach
 
