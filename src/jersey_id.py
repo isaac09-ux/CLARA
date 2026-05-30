@@ -153,7 +153,7 @@ class JerseyIdentifier:
 
     def __init__(self, roster_path, min_crop_px=40,
                  vote_threshold=1.5, min_dominance=0.5,
-                 max_obs_per_track=30, ocr_conf_min=0.3):
+                 max_obs_per_track=30, ocr_conf_min=0.3, gpu=False):
         """
         min_crop_px       lado mínimo del recorte; más chico = OCR basura, se salta
         vote_threshold    peso acumulado mínimo (suma de confianzas) para nombrar
@@ -182,7 +182,7 @@ class JerseyIdentifier:
                 "easyocr no instalado. Instala con: pip install easyocr"
             ) from e
         print("[jersey_id] Cargando easyocr (descarga modelos la 1a vez)...")
-        self._reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+        self._reader = easyocr.Reader(["en"], gpu=gpu, verbose=False)
 
     def observe(self, tid, frame, bbox, pose=None):
         """Intenta leer el número de un track en un frame. Acumula votos.
