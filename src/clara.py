@@ -520,6 +520,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         vballnet_stride=1,
         pose_mode="none",
         court_model=None,
+        court_seg_model=None,
         roi_margin_m=2.0,
         use_roi=True,
         save_diagnostic=True):
@@ -527,13 +528,27 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # Auto-calibracion: si se pasa court_model, intentar calibrar solo.
+    # Auto-calibracion: si se pasa court_model (keypoints) y/o court_seg_model
+    # (segmentacion pre-entrenada, sin entrenar), intentar calibrar solo.
     # Si funciona, se usa esa calibracion. Si falla, cae al cal.json manual
     # (si existe) o aborta pidiendo MIRA.
-    if court_model is not None:
-        from court_keypoints import auto_calibrate
-        print("[•] Intentando auto-calibracion con modelo de cancha...")
-        auto_cal = auto_calibrate(video_path, court_model)
+    if court_model is not None or court_seg_model is not None:
+        auto_cal = None
+
+        if court_model is not None:
+            from court_keypoints import auto_calibrate
+            print("[•] Intentando auto-calibracion con modelo de cancha (keypoints)...")
+            auto_cal = auto_calibrate(video_path, court_model)
+
+        # Fallback sin entrenar: segmentacion de cancha pre-entrenada. Produce
+        # el mismo cal.json y la misma convencion de coordenadas que
+        # court_keypoints, asi que zone_for_court_pos sigue siendo valido.
+        if auto_cal is None and court_seg_model is not None:
+            from court_segmentation import auto_calibrate_seg
+            print("[•] Intentando auto-calibracion por segmentacion (sin entrenar)...")
+            auto_cal = auto_calibrate_seg(video_path, court_seg_model,
+                                          qc_path=str(out / "cal_check.jpg"))
+
         if auto_cal is not None:
             cal = auto_cal
             (out / "cal_auto.json").write_text(json.dumps(cal, indent=2))
@@ -1360,6 +1375,11 @@ if __name__ == "__main__":
                    help="Modelo YOLO-pose de cancha para auto-calibracion. "
                         "Si se da, CLARA calibra sola; si falla, cae a "
                         "--calibration.")
+    p.add_argument("--court-seg-model", default=None,
+                   help="Modelo YOLO-seg de cancha (court/weights/best.pt de "
+                        "volleyball_analytics) para auto-calibracion por "
+                        "segmentacion SIN entrenar. Se usa como fallback si "
+                        "--court-model no se da o falla; mismo cal.json.")
     p.add_argument("--out", default="out")
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--person-conf", type=float, default=0.4)
@@ -1381,8 +1401,9 @@ if __name__ == "__main__":
                    help="Desactiva el filtro ROI de imagen (vuelve al "
                         "comportamiento previo: solo is_in_court).")
     a = p.parse_args()
-    if a.calibration is None and a.court_model is None:
-        p.error("Se requiere --calibration cal.json o --court-model modelo.pt")
+    if a.calibration is None and a.court_model is None and a.court_seg_model is None:
+        p.error("Se requiere --calibration cal.json, --court-model o "
+                "--court-seg-model")
     run(a.video, a.calibration, a.out, a.stride,
         a.person_conf, a.ball_conf,
         ball_detector=a.ball_detector,
@@ -1391,5 +1412,6 @@ if __name__ == "__main__":
         vballnet_stride=a.vballnet_stride,
         pose_mode=a.pose,
         court_model=a.court_model,
+        court_seg_model=a.court_seg_model,
         roi_margin_m=a.roi_margin,
         use_roi=not a.no_roi)
