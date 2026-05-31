@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- **Auto-calibración por MOVIMIENTO** (`court_motion_calibration.py`, módulo
+  nuevo; flag `--court-motion` en `clara.py`): tercer backend de calibración SIN
+  entrenar, hermano de `court_segmentation.py`. Pensado para gimnasios multiuso /
+  ángulo oblicuo donde la segmentación pre-entrenada falla (la cancha sale con
+  ≤6.5% del frame y las líneas de basket confunden al modelo de apariencia). En
+  vez de mirar cómo se VE la cancha, deduce DÓNDE está a partir de DÓNDE se mueven
+  las jugadoras: pasada ligera de YOLO11m sobre frames muestreados → punto de pie
+  por jugadora → densidad 2D (umbral por percentil para tirar calentamiento/
+  run-off) → huella binaria → esquinas → homografía. Reusa la geometría/QC de
+  `court_segmentation` (`corners_from_mask`, `draw_qc_overlay`) y produce el MISMO
+  `cal.json` (misma convención de coordenadas, así que `zone_for_court_pos` sigue
+  válido), más `pixel_corners` a nivel raíz (activa el filtro de balón por imagen
+  que el backend de segmentación omitía). CPU y GPU (auto-selecciona device).
+  Tamaño de cancha AUTO (media 9×9 vs completa 9×18) por rectificación métrica
+  desde el rectángulo (dos puntos de fuga + restricción de paralelogramo): el
+  ancho es 9 m en ambos casos, el aspecto largo/corto (~1 vs ~2) discrimina.
+  HONESTIDAD: la rectificación métrica requiere cámara OBLICUA (el caso de este
+  gimnasio); con cámara centrada sobre el eje de la cancha el ancho es
+  fronto-paralelo, el aspecto queda indeterminado y se asume FULL avisando — usa
+  `--court-size {full,half}` para forzar. El snap de bordes a líneas reales
+  (Hough) es opcional (`--snap-lines`) y conservador. SIEMPRE revisa el
+  `cal_check.jpg`. Validado offline sin modelos por `test_motion_cal.py`
+  (geometría: round-trip de homografía, zonas, aspecto métrico exacto en cámara
+  oblicua, orientación).
 - **ROI de jugadoras en espacio de imagen** (`clara.py`): `is_in_court()` filtra
   en coordenadas proyectadas, pero la homografía extiende el plano del piso — el
   público detrás del fondo y la banca del lado lejano se proyectan DENTRO del
