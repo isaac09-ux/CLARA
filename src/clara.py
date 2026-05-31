@@ -586,6 +586,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
         pose_mode="none",
         court_model=None,
         court_seg_model=None,
+        court_motion=False,
         roi_margin_m=2.0,
         use_roi=True,
         save_diagnostic=True):
@@ -597,7 +598,7 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
     # (segmentacion pre-entrenada, sin entrenar), intentar calibrar solo.
     # Si funciona, se usa esa calibracion. Si falla, cae al cal.json manual
     # (si existe) o aborta pidiendo MIRA.
-    if court_model is not None or court_seg_model is not None:
+    if court_model is not None or court_seg_model is not None or court_motion:
         auto_cal = None
 
         if court_model is not None:
@@ -613,6 +614,16 @@ def run(video_path, calibration_path, output_dir="out", stride=5,
             print("[•] Intentando auto-calibracion por segmentacion (sin entrenar)...")
             auto_cal = auto_calibrate_seg(video_path, court_seg_model,
                                           qc_path=str(out / "cal_check.jpg"))
+
+        # Fallback por MOVIMIENTO: deduce la cancha de donde se mueven las
+        # jugadoras. Robusto en gimnasios multiuso/oblicuos donde la
+        # segmentacion falla. Mismo cal.json y convencion de coordenadas.
+        if auto_cal is None and court_motion:
+            from court_motion_calibration import auto_calibrate_motion
+            print("[•] Intentando auto-calibracion por movimiento (sin entrenar)...")
+            auto_cal = auto_calibrate_motion(video_path,
+                                             vballnet_model=vballnet_model,
+                                             qc_path=str(out / "cal_check.jpg"))
 
         if auto_cal is not None:
             cal = auto_cal
@@ -1461,6 +1472,12 @@ if __name__ == "__main__":
                         "volleyball_analytics) para auto-calibracion por "
                         "segmentacion SIN entrenar. Se usa como fallback si "
                         "--court-model no se da o falla; mismo cal.json.")
+    p.add_argument("--court-motion", action="store_true",
+                   help="Auto-calibracion por MOVIMIENTO (sin entrenar): deduce "
+                        "la cancha de donde se mueven las jugadoras. Robusto en "
+                        "gimnasios multiuso/oblicuos donde --court-seg-model "
+                        "falla. Fallback tras keypoints/segmentacion; mismo "
+                        "cal.json. Usa --vballnet-model si se da como pista extra.")
     p.add_argument("--out", default="out")
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--person-conf", type=float, default=0.4)
@@ -1485,9 +1502,10 @@ if __name__ == "__main__":
                    help="Desactiva el filtro ROI de imagen (vuelve al "
                         "comportamiento previo: solo is_in_court).")
     a = p.parse_args()
-    if a.calibration is None and a.court_model is None and a.court_seg_model is None:
-        p.error("Se requiere --calibration cal.json, --court-model o "
-                "--court-seg-model")
+    if (a.calibration is None and a.court_model is None and
+            a.court_seg_model is None and not a.court_motion):
+        p.error("Se requiere --calibration cal.json, --court-model, "
+                "--court-seg-model o --court-motion")
     run(a.video, a.calibration, a.out, a.stride,
         a.person_conf, a.ball_conf,
         ball_detector=a.ball_detector,
@@ -1498,5 +1516,6 @@ if __name__ == "__main__":
         pose_mode=a.pose,
         court_model=a.court_model,
         court_seg_model=a.court_seg_model,
+        court_motion=a.court_motion,
         roi_margin_m=a.roi_margin,
         use_roi=not a.no_roi)
